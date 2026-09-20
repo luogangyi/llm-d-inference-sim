@@ -1,0 +1,17 @@
+# OpenAI-compatible SGLang profile. Native SGLang routes are introduced separately.
+model: mock-sglang-openai
+served-model-name:
+  - Qwen/Qwen3-32B-SGLang
+  - DeepSeek-V4-Flash-SGLang
+mode: random
+seed: 20260918
+max-model-len: 131072
+max-num-seqs: 600
+max-waiting-queue-length: 2000
+latency-calculator: per-token
+prefill-overhead: 70ms
+prefill-time-per-token: 35us
+prefill-time-std-dev: 8ms
+inter-token-latency: 16ms
+inter-token-latency-std-dev: 2ms
+time-factor-under-load: 2.0

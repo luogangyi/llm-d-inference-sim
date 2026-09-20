@@ -1,0 +1,17 @@
+# OpenAI-compatible vLLM profile for reproducible chat traffic tests.
+model: mock-vllm
+served-model-name:
+  - Qwen/Qwen3-32B
+  - deepseek-ai/DeepSeek-V4-Flash
+mode: random
+seed: 20260918
+max-model-len: 131072
+max-num-seqs: 600
+max-waiting-queue-length: 2000
+latency-calculator: per-token
+prefill-overhead: 80ms
+prefill-time-per-token: 40us
+prefill-time-std-dev: 8ms
+inter-token-latency: 18ms
+inter-token-latency-std-dev: 2ms
+time-factor-under-load: 2.0

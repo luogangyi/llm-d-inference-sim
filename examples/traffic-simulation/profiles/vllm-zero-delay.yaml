@@ -1,0 +1,16 @@
+# OpenAI-compatible vLLM profile for measuring simulator overhead.
+model: mock-vllm
+served-model-name:
+  - Qwen/Qwen3-32B
+mode: random
+seed: 20260918
+max-model-len: 131072
+max-num-seqs: 600
+max-waiting-queue-length: 2000
+latency-calculator: per-token
+prefill-overhead: 0s
+prefill-time-per-token: 0s
+prefill-time-std-dev: 0s
+inter-token-latency: 0s
+inter-token-latency-std-dev: 0s
+time-factor-under-load: 1.0

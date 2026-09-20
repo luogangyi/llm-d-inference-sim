@@ -1,0 +1,17 @@
+# OpenAI-compatible vLLM-Ascend profile. Calibrate latency values with target hardware.
+model: mock-vllm-ascend
+served-model-name:
+  - Qwen/Qwen3-32B-Ascend
+  - DeepSeek-V4-Flash-Ascend
+mode: random
+seed: 20260918
+max-model-len: 131072
+max-num-seqs: 400
+max-waiting-queue-length: 2000
+latency-calculator: per-token
+prefill-overhead: 120ms
+prefill-time-per-token: 65us
+prefill-time-std-dev: 15ms
+inter-token-latency: 25ms
+inter-token-latency-std-dev: 4ms
+time-factor-under-load: 2.5
