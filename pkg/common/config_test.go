@@ -103,6 +103,20 @@ var _ = Describe("ApplyAdminUpdate", func() {
 		Expect(base.TrafficSimulation.Scenario).To(Equal("default"))
 	})
 
+	It("updates nested stream faults without mutating the active configuration", func() {
+		next, _, _, err := base.Update([]byte(`{"traffic-simulation":{"stream-faults":{"disconnect-rate":100,"disconnect-after-chunks":2}}}`))
+		Expect(err).ToNot(HaveOccurred())
+		Expect(next.TrafficSimulation.StreamFaults.DisconnectRate).To(Equal(100))
+		Expect(next.TrafficSimulation.StreamFaults.DisconnectAfterChunks).To(Equal(2))
+		Expect(base.TrafficSimulation.StreamFaults.DisconnectRate).To(Equal(0))
+	})
+
+	It("rejects invalid nested stream faults", func() {
+		_, _, _, err := base.Update([]byte(`{"traffic-simulation":{"stream-faults":{"stall-rate":100}}}`))
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("stall-after-chunks"))
+	})
+
 	It("returns the parsed fake-metrics partial via update.FakeMetrics", func() {
 		// A fake-metrics partial only makes sense against an already-configured
 		// FakeMetrics value (see Configuration.Update); the base fixture starts
@@ -406,6 +420,7 @@ var _ = Describe("admin struct tags", func() {
 		checkTags(reflect.TypeOf(Configuration{}))
 		checkTags(reflect.TypeOf(LatenciesConfig{}))
 		checkTags(reflect.TypeOf(TrafficSimulationConfig{}))
+		checkTags(reflect.TypeOf(StreamFaultsConfig{}))
 	})
 
 	It("configurableFields contains exactly the expected entries with their rebuild tags", func() {
@@ -431,6 +446,14 @@ var _ = Describe("admin struct tags", func() {
 			"image-emission-rate":               "",
 			"scenario":                          "",
 			"enable-test-controls":              "",
+			"disconnect-rate":                   "",
+			"disconnect-after-chunks":           "",
+			"stall-rate":                        "",
+			"stall-after-chunks":                "",
+			"stall-duration":                    "",
+			"omit-done-rate":                    "",
+			"omit-usage-rate":                   "",
+			"corrupt-usage-rate":                "",
 		}))
 	})
 

@@ -455,6 +455,21 @@ type TrafficSimulationConfig struct {
 	Scenario string `yaml:"scenario" json:"scenario" admin:"configurable"`
 	// EnableTestControls enables the X-Mock-* request headers.
 	EnableTestControls bool `yaml:"enable-test-controls" json:"enable-test-controls" admin:"configurable"`
+	// StreamFaults controls probabilistic faults for streaming responses.
+	StreamFaults StreamFaultsConfig `yaml:"stream-faults" json:"stream-faults"`
+}
+
+// StreamFaultsConfig configures optional SSE transport faults. A rate of zero
+// disables its corresponding fault.
+type StreamFaultsConfig struct {
+	DisconnectRate        int           `yaml:"disconnect-rate" json:"disconnect-rate" admin:"configurable"`
+	DisconnectAfterChunks int           `yaml:"disconnect-after-chunks" json:"disconnect-after-chunks" admin:"configurable"`
+	StallRate             int           `yaml:"stall-rate" json:"stall-rate" admin:"configurable"`
+	StallAfterChunks      int           `yaml:"stall-after-chunks" json:"stall-after-chunks" admin:"configurable"`
+	StallDuration         time.Duration `yaml:"stall-duration" json:"stall-duration" admin:"configurable"`
+	OmitDoneRate          int           `yaml:"omit-done-rate" json:"omit-done-rate" admin:"configurable"`
+	OmitUsageRate         int           `yaml:"omit-usage-rate" json:"omit-usage-rate" admin:"configurable"`
+	CorruptUsageRate      int           `yaml:"corrupt-usage-rate" json:"corrupt-usage-rate" admin:"configurable"`
 }
 
 // NewConfig returns a Configuration populated with the documented defaults of
@@ -693,6 +708,28 @@ func (c *Configuration) validate() error {
 		return errors.New("failure injection rate should be between 0 and 100")
 	}
 
+	faults := c.TrafficSimulation.StreamFaults
+	for name, rate := range map[string]int{
+		"disconnect-rate":    faults.DisconnectRate,
+		"stall-rate":         faults.StallRate,
+		"omit-done-rate":     faults.OmitDoneRate,
+		"omit-usage-rate":    faults.OmitUsageRate,
+		"corrupt-usage-rate": faults.CorruptUsageRate,
+	} {
+		if rate < 0 || rate > 100 {
+			return fmt.Errorf("traffic-simulation stream-faults %s must be between 0 and 100", name)
+		}
+	}
+	if faults.DisconnectAfterChunks < 0 || faults.StallAfterChunks < 0 || faults.StallDuration < 0 {
+		return errors.New("traffic-simulation stream-faults chunk counts and stall duration cannot be negative")
+	}
+	if faults.DisconnectRate > 0 && faults.DisconnectAfterChunks == 0 {
+		return errors.New("traffic-simulation stream-faults disconnect-after-chunks must be positive when disconnect-rate is enabled")
+	}
+	if faults.StallRate > 0 && (faults.StallAfterChunks == 0 || faults.StallDuration == 0) {
+		return errors.New("traffic-simulation stream-faults stall-after-chunks and stall-duration must be positive when stall-rate is enabled")
+	}
+
 	if c.ImageEmissionRate < 0 || c.ImageEmissionRate > 100 {
 		return errors.New("image emission rate should be between 0 and 100")
 	}
@@ -791,6 +828,7 @@ func init() {
 	collectFieldMeta(reflect.TypeOf(Configuration{}))
 	collectFieldMeta(reflect.TypeOf(LatenciesConfig{}))
 	collectFieldMeta(reflect.TypeOf(TrafficSimulationConfig{}))
+	collectFieldMeta(reflect.TypeOf(StreamFaultsConfig{}))
 
 	latenciesYAMLKeys = yamlKeysOf(reflect.TypeOf(LatenciesConfig{}))
 	latenciesYAMLKeySet = make(map[string]bool, len(latenciesYAMLKeys))
@@ -916,6 +954,22 @@ func unfoldNestedTrafficSimulation(raw map[string]json.RawMessage) error {
 		return fmt.Errorf(`field "traffic-simulation": %w`, err)
 	}
 	for key, value := range nested {
+		if key == "stream-faults" {
+			var faults map[string]json.RawMessage
+			if err := json.Unmarshal(value, &faults); err != nil {
+				return fmt.Errorf(`field "traffic-simulation.stream-faults": %w`, err)
+			}
+			for faultKey, faultValue := range faults {
+				if _, configurable := configurableFields[faultKey]; !configurable {
+					return fmt.Errorf("field '%s' is not traffic-simulation.stream-faults configurable", faultKey)
+				}
+				if _, exists := raw[faultKey]; exists {
+					return fmt.Errorf("traffic-simulation stream-faults settings mix the flat layout (%s) with the nested object; use only one", faultKey)
+				}
+				raw[faultKey] = faultValue
+			}
+			continue
+		}
 		if _, configurable := configurableFields[key]; !configurable {
 			return fmt.Errorf("field '%s' is not traffic-simulation configurable", key)
 		}
@@ -960,6 +1014,23 @@ func foldFlatTrafficSimulation(raw map[string]json.RawMessage) error {
 			nested[key] = value
 			delete(raw, key)
 		}
+	}
+	faults := make(map[string]json.RawMessage)
+	for _, key := range []string{
+		"disconnect-rate", "disconnect-after-chunks", "stall-rate", "stall-after-chunks", "stall-duration",
+		"omit-done-rate", "omit-usage-rate", "corrupt-usage-rate",
+	} {
+		if value, ok := raw[key]; ok {
+			faults[key] = value
+			delete(raw, key)
+		}
+	}
+	if len(faults) > 0 {
+		data, err := json.Marshal(faults)
+		if err != nil {
+			return fmt.Errorf("failed to marshal stream-faults: %w", err)
+		}
+		nested["stream-faults"] = data
 	}
 	if len(nested) == 0 {
 		return nil

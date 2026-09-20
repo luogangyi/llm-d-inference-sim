@@ -284,7 +284,7 @@ func (c *Communication) handleHTTP(req endpoint.Request, respBuilder responseBui
 	requestID := c.getRequestID(ctx)
 	req.SetRequestID(requestID)
 
-	overrides, controlsErr := parseSimulationControls(&ctx.Request.Header, c.runtime.Config())
+	overrides, controlsErr := parseSimulationControls(&ctx.Request.Header, c.runtime.Config(), req.IsStream(), c.runtime.GetRandom())
 	if controlsErr != nil {
 		c.sendError(ctx, controlsErr, false)
 		return
@@ -451,11 +451,14 @@ func newStreamState(numChoices int) streamState {
 // sendOrFail writes chunk to w, reporting a chunk-send failure on err. A nil
 // chunk is a no-op. Returns true on success; the caller should return when it
 // sees false (the failure has already been reported on ctx).
-func (c *Communication) sendOrFail(ctx *fasthttp.RequestCtx, w *bufio.Writer, chunk sseChunk, failMsg string) bool {
+func (c *Communication) sendOrFail(ctx *fasthttp.RequestCtx, w *streamFaultWriter, chunk sseChunk, failMsg string) bool {
 	if chunk == nil {
 		return true
 	}
-	if err := c.sendChunk(w, chunk); err != nil {
+	if err := w.send(chunk); err != nil {
+		if errors.Is(err, errStreamFaultDisconnect) {
+			return false
+		}
 		c.chunkSendFailed(ctx, failMsg, err)
 		return false
 	}
@@ -468,6 +471,7 @@ func (c *Communication) sendStream(ctx *fasthttp.RequestCtx, channel common.Chan
 
 	go func() {
 		w := bufio.NewWriter(pw)
+		streamWriter := newStreamFaultWriter(w, first.RespCtx.RequestContext().Request().GetSimulationOverrides().StreamFaults)
 		var respCtx endpoint.ResponseContext
 		state := newStreamState(numChoices)
 
@@ -512,7 +516,8 @@ func (c *Communication) sendStream(ctx *fasthttp.RequestCtx, channel common.Chan
 			// chunk once globally and skip the response — Created has no tokens.
 			if response.Status == endpoint.ResponseStatusCreated {
 				if !state.initialSent {
-					if !c.sendOrFail(ctx, w, respBuilder.createInitialChunk(respCtx), "Sending first stream chunk failed, ") {
+					if !c.sendOrFail(ctx, streamWriter, respBuilder.createInitialChunk(respCtx), "Sending first stream chunk failed, ") {
+						go drainResponseChannel(channel)
 						return
 					}
 					state.initialSent = true
@@ -520,7 +525,7 @@ func (c *Communication) sendStream(ctx *fasthttp.RequestCtx, channel common.Chan
 				continue
 			}
 
-			ok, stop := c.emitResponseChunks(ctx, w, respBuilder, response, respCtx, &state, response.Status == endpoint.ResponseEndOfTokens)
+			ok, stop := c.emitResponseChunks(ctx, streamWriter, respBuilder, response, respCtx, &state, response.Status == endpoint.ResponseEndOfTokens)
 			if !ok {
 				go drainResponseChannel(channel)
 				return
@@ -541,13 +546,14 @@ func (c *Communication) sendStream(ctx *fasthttp.RequestCtx, channel common.Chan
 
 		if respCtx.SendImage() {
 			for i := range state.respCtxPerChoice {
-				if !c.sendOrFail(ctx, w, respBuilder.createImageChunk(respCtx, i), "Sending image chunk failed, ") {
+				if !c.sendOrFail(ctx, streamWriter, respBuilder.createImageChunk(respCtx, i), "Sending image chunk failed, ") {
+					go drainResponseChannel(channel)
 					return
 				}
 			}
 		}
 
-		c.finalizeStream(ctx, w, respBuilder, &state, respCtx)
+		c.finalizeStream(ctx, streamWriter, respBuilder, &state, respCtx)
 	}()
 
 	ctx.Response.SetBodyStream(pr, -1)
@@ -557,7 +563,7 @@ func (c *Communication) sendStream(ctx *fasthttp.RequestCtx, channel common.Chan
 // (ok, stop): ok=false means the caller should return (a send failed and was
 // already reported via ctx); stop=true means the stream is complete and the main
 // loop should break out to finalize.
-func (c *Communication) emitResponseChunks(ctx *fasthttp.RequestCtx, w *bufio.Writer, respBuilder responseBuilder,
+func (c *Communication) emitResponseChunks(ctx *fasthttp.RequestCtx, w *streamFaultWriter, respBuilder responseBuilder,
 	response *endpoint.ResponseInfo, respCtx endpoint.ResponseContext, state *streamState, lastTokensChunk bool) (ok bool, stop bool) {
 	choiceIdx := response.ChoiceIdx
 
@@ -577,6 +583,9 @@ func (c *Communication) emitResponseChunks(ctx *fasthttp.RequestCtx, w *bufio.Wr
 			}
 			if err := c.sendStreamedTools(respCtx, respBuilder, w, response.Tokens.Strings, response.ToolCall,
 				state.toolCallIndex[choiceIdx], choiceIdx); err != nil {
+				if errors.Is(err, errStreamFaultDisconnect) {
+					return false, false
+				}
 				c.chunkSendFailed(ctx, "Sending tools chunk failed, ", err)
 				return false, false
 			}
@@ -599,13 +608,13 @@ func (c *Communication) emitResponseChunks(ctx *fasthttp.RequestCtx, w *bufio.Wr
 	}
 
 	errToSend := api.NewError("unexpected response part in streaming", fasthttp.StatusInternalServerError, nil)
-	c.sendStreamErrorAndDone(w, &errToSend)
+	c.sendStreamErrorAndDone(w.writer, &errToSend)
 	return false, false
 }
 
 // finalizeStream emits the post-loop SSE frames: a last chunk per choice (if the
 // builder wants one for the finish reason), the usage chunk, and [DONE].
-func (c *Communication) finalizeStream(ctx *fasthttp.RequestCtx, w *bufio.Writer, respBuilder responseBuilder,
+func (c *Communication) finalizeStream(ctx *fasthttp.RequestCtx, w *streamFaultWriter, respBuilder responseBuilder,
 	state *streamState, respContext endpoint.ResponseContext) {
 	for i, rc := range state.respCtxPerChoice {
 		if !c.sendOrFail(ctx, w, respBuilder.createLastChunk(respContext, *rc.FinishReason(), i),
@@ -613,10 +622,19 @@ func (c *Communication) finalizeStream(ctx *fasthttp.RequestCtx, w *bufio.Writer
 			return
 		}
 	}
-	if !c.sendOrFail(ctx, w, respBuilder.createUsageChunk(state.respCtxPerChoice), "Sending usage chunk failed, ") {
-		return
+	policy := respContext.RequestContext().Request().GetSimulationOverrides().StreamFaults
+	if !policy.OmitUsage {
+		usageChunk := respBuilder.createUsageChunk(state.respCtxPerChoice)
+		if policy.CorruptUsage && usageChunk != nil {
+			usageChunk = corruptUsageChunk{chunk: usageChunk}
+		}
+		if !c.sendOrFail(ctx, w, usageChunk, "Sending usage chunk failed, ") {
+			return
+		}
 	}
-	c.sendOrFail(ctx, w, respBuilder.createDoneChunk(), "Sending [DONE] chunk failed, ")
+	if !policy.OmitDone {
+		c.sendOrFail(ctx, w, respBuilder.createDoneChunk(), "Sending [DONE] chunk failed, ")
+	}
 }
 
 func (c *Communication) chunkSendFailed(ctx *fasthttp.RequestCtx, msg string, err error) {
@@ -629,7 +647,7 @@ func (c *Communication) chunkSendFailed(ctx *fasthttp.RequestCtx, msg string, er
 }
 
 func (c *Communication) sendStreamedTools(respCtx endpoint.ResponseContext, respBuilder responseBuilder,
-	w *bufio.Writer, tokens []string, tc *api.ToolCall, index int, choiceIdx int) error {
+	w *streamFaultWriter, tokens []string, tc *api.ToolCall, index int, choiceIdx int) error {
 	tokensStr := strings.Join(tokens, "")
 
 	toolChunkInsert := &api.ToolCall{
@@ -650,7 +668,7 @@ func (c *Communication) sendStreamedTools(respCtx endpoint.ResponseContext, resp
 		*respCtx.FinishReason() == common.CacheThresholdFinishReason) {
 		finishReasonToSend = respCtx.FinishReason()
 	}
-	return c.sendChunk(w, respBuilder.createChunk(respCtx, nil, toolChunkInsert, "", finishReasonToSend, choiceIdx))
+	return w.send(respBuilder.createChunk(respCtx, nil, toolChunkInsert, "", finishReasonToSend, choiceIdx))
 }
 
 func (c *Communication) sendChunk(w *bufio.Writer, chunk sseChunk) error {

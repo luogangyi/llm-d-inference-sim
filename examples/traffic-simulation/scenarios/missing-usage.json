@@ -1,0 +1,8 @@
+{
+  "traffic-simulation": {
+    "scenario": "missing-usage",
+    "stream-faults": {
+      "omit-usage-rate": 100
+    }
+  }
+}

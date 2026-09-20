@@ -1,0 +1,9 @@
+{
+  "traffic-simulation": {
+    "scenario": "midstream-disconnect",
+    "stream-faults": {
+      "disconnect-rate": 100,
+      "disconnect-after-chunks": 2
+    }
+  }
+}

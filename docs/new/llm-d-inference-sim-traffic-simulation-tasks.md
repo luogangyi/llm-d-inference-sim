@@ -9,7 +9,7 @@
 | M0 | 协议基线与交付边界 | 未开始 | - | fixture 契约测试 |
 | M1 | OpenAI Profile 与基线 smoke | 已完成 | `ddd880b` | `make test`、`make presubmit` |
 | M2 | Token、时延和 Scenario 控制 | 已完成 | 本提交 | 单元包通过；7 个 HTTP e2e 规格通过；`make presubmit` 通过 |
-| M3 | SSE 流故障 | 未开始 | - | 流式故障单元与 HTTP e2e |
+| M3 | SSE 流故障 | 已完成 | 本提交 | 流故障单元测试通过；5 个 HTTP e2e 规格通过；`make presubmit` 通过 |
 | M4 | SGLang 原生 engine | 未开始 | - | SGLang wire 契约与 HTTP e2e |
 | M5 | 指标、运行手册和压测复现 | 未开始 | - | 指标断言、压测脚本验证 |
 
@@ -26,3 +26,4 @@
 | --- | --- |
 | 2026-09-20 | 采用本文件管理后续里程碑，不再以 GitHub Issue 作为任务跟踪载体。 |
 | 2026-09-20 | M2 实现请求级 Token 与时延控制、场景原子更新和 Profile/Scenario 指标；单元测试、HTTP e2e 和预检通过。 |
+| 2026-09-20 | M3 实现 SSE 断流、停顿、usage 损坏、usage/DONE 省略及运行时场景更新；单元测试、HTTP e2e 和预检通过。 |

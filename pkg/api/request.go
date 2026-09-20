@@ -139,6 +139,18 @@ type SimulationOverrides struct {
 	OutputTokens       *int
 	TTFT               *time.Duration
 	ITL                *time.Duration
+	StreamFaults       StreamFaultPolicy
+}
+
+// StreamFaultPolicy controls intentional per-request SSE transport faults.
+// Zero values preserve normal stream behavior.
+type StreamFaultPolicy struct {
+	DisconnectAfterChunks int
+	StallAfterChunks      int
+	StallDuration         time.Duration
+	OmitDone              bool
+	OmitUsage             bool
+	CorruptUsage          bool
 }
 
 // baseRequest contains base completions request related information

@@ -1,0 +1,10 @@
+{
+  "traffic-simulation": {
+    "scenario": "slow-decode",
+    "stream-faults": {
+      "stall-rate": 100,
+      "stall-after-chunks": 1,
+      "stall-duration": "1s"
+    }
+  }
+}
