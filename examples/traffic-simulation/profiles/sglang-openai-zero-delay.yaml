@@ -14,3 +14,7 @@ prefill-time-std-dev: 0s
 inter-token-latency: 0s
 inter-token-latency-std-dev: 0s
 time-factor-under-load: 1.0
+traffic-simulation:
+  profile: sglang-openai-zero-delay
+  scenario: default
+  enable-test-controls: false

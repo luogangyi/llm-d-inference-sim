@@ -151,7 +151,8 @@ func (s *SimContext) ApplyConfigUpdate(body []byte) error {
 	s.adminMu.Lock()
 	defer s.adminMu.Unlock()
 
-	next, update, latencyChanged, err := s.Config().Update(body)
+	current := s.Config()
+	next, update, latencyChanged, err := current.Update(body)
 	if err != nil {
 		return err
 	}
@@ -174,6 +175,14 @@ func (s *SimContext) ApplyConfigUpdate(body []byte) error {
 		}
 	}
 	s.SetConfig(next)
+	if current.TrafficSimulation != next.TrafficSimulation {
+		s.setSimulationInfo(current, 0)
+		s.setSimulationInfo(next, 1)
+		s.logger.V(logging.INFO).Info("Traffic simulation configuration updated",
+			"profile", next.TrafficSimulation.Profile,
+			"oldScenario", current.TrafficSimulation.Scenario,
+			"newScenario", next.TrafficSimulation.Scenario)
+	}
 	// The calculator caches latency-related fields at construction time, so
 	// rebuild it whenever any of those fields was updated.
 	if latencyChanged {
@@ -418,6 +427,9 @@ func (s *SimContext) simulateTTFT(respCtx endpoint.ResponseContext) {
 		RunningReqs:        s.metrics.nRunningReqs.Load(),
 	}
 	ttft := s.latencyCalc().GetTimeToFirstToken(&params)
+	if override := respCtx.RequestContext().Request().GetSimulationOverrides().TTFT; override != nil {
+		ttft = *override
+	}
 	time.Sleep(ttft)
 	// report ttft in seconds
 	common.WriteToChannel(s.metrics.ttftChan, ttft.Seconds(), s.logger)
@@ -430,9 +442,12 @@ func (s *SimContext) simulateImageGenerationLatency() {
 	}
 }
 
-func (s *SimContext) simulateInterTokenLatency() {
+func (s *SimContext) simulateInterTokenLatency(respCtx endpoint.ResponseContext) {
 	perTokenLatency := s.latencyCalc().GetInterTokenLatency(&InterTokenParams{
 		RunningReqs: s.metrics.nRunningReqs.Load()})
+	if override := respCtx.RequestContext().Request().GetSimulationOverrides().ITL; override != nil {
+		perTokenLatency = *override
+	}
 	time.Sleep(perTokenLatency)
 
 	// report tpot in seconds

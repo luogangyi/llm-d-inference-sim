@@ -15,3 +15,7 @@ prefill-time-std-dev: 8ms
 inter-token-latency: 18ms
 inter-token-latency-std-dev: 2ms
 time-factor-under-load: 2.0
+traffic-simulation:
+  profile: vllm-normal-chat
+  scenario: default
+  enable-test-controls: false

@@ -284,6 +284,13 @@ func (c *Communication) handleHTTP(req endpoint.Request, respBuilder responseBui
 	requestID := c.getRequestID(ctx)
 	req.SetRequestID(requestID)
 
+	overrides, controlsErr := parseSimulationControls(&ctx.Request.Header, c.runtime.Config())
+	if controlsErr != nil {
+		c.sendError(ctx, controlsErr, false)
+		return
+	}
+	req.SetSimulationOverrides(overrides)
+
 	// Check for X-Return-Error header - deterministic error trigger
 	if errCodeStr := string(ctx.Request.Header.Peek(XReturnErrorHeader)); errCodeStr != "" {
 		code, err := strconv.Atoi(errCodeStr)

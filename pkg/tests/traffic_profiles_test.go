@@ -31,35 +31,39 @@ import (
 const trafficProfilesDir = "../../examples/traffic-simulation/profiles"
 
 type trafficProfile struct {
-	name             string
-	model            string
-	servedModel      string
-	maxNumSeqs       int
-	interTokenMillis int
+	name              string
+	simulationProfile string
+	model             string
+	servedModel       string
+	maxNumSeqs        int
+	interTokenMillis  int
 }
 
 var _ = Describe("traffic simulation profiles", func() {
 	profiles := []trafficProfile{
 		{
-			name:             "vllm-normal-chat.yaml",
-			model:            "mock-vllm",
-			servedModel:      "Qwen/Qwen3-32B",
-			maxNumSeqs:       600,
-			interTokenMillis: 18,
+			name:              "vllm-normal-chat.yaml",
+			simulationProfile: "vllm-normal-chat",
+			model:             "mock-vllm",
+			servedModel:       "Qwen/Qwen3-32B",
+			maxNumSeqs:        600,
+			interTokenMillis:  18,
 		},
 		{
-			name:             "vllm-ascend-normal-chat.yaml",
-			model:            "mock-vllm-ascend",
-			servedModel:      "Qwen/Qwen3-32B-Ascend",
-			maxNumSeqs:       400,
-			interTokenMillis: 25,
+			name:              "vllm-ascend-normal-chat.yaml",
+			simulationProfile: "vllm-ascend-normal-chat",
+			model:             "mock-vllm-ascend",
+			servedModel:       "Qwen/Qwen3-32B-Ascend",
+			maxNumSeqs:        400,
+			interTokenMillis:  25,
 		},
 		{
-			name:             "sglang-openai-normal-chat.yaml",
-			model:            "mock-sglang-openai",
-			servedModel:      "Qwen/Qwen3-32B-SGLang",
-			maxNumSeqs:       600,
-			interTokenMillis: 16,
+			name:              "sglang-openai-normal-chat.yaml",
+			simulationProfile: "sglang-openai-normal-chat",
+			model:             "mock-sglang-openai",
+			servedModel:       "Qwen/Qwen3-32B-SGLang",
+			maxNumSeqs:        600,
+			interTokenMillis:  16,
 		},
 	}
 
@@ -78,6 +82,9 @@ var _ = Describe("traffic simulation profiles", func() {
 		Expect(config.MaxModelLen).To(Equal(131072))
 		Expect(config.MaxNumSeqs).To(Equal(profile.maxNumSeqs))
 		Expect(config.Latencies.InterTokenLatency.Milliseconds()).To(Equal(int64(profile.interTokenMillis)))
+		Expect(config.TrafficSimulation.Profile).To(Equal(profile.simulationProfile))
+		Expect(config.TrafficSimulation.Scenario).To(Equal("default"))
+		Expect(config.TrafficSimulation.EnableTestControls).To(BeFalse())
 	},
 		Entry("vLLM", profiles[0]),
 		Entry("vLLM Ascend", profiles[1]),

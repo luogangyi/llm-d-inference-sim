@@ -156,6 +156,9 @@ type Configuration struct {
 	// foldFlatLatencies) still accept the legacy flat top-level keys too,
 	// folded into "latencies" before unmarshalling into a Configuration.
 	Latencies LatenciesConfig `yaml:"latencies" json:"latencies"`
+	// TrafficSimulation groups the profile identity and runtime test controls
+	// used by traffic-simulation deployments.
+	TrafficSimulation TrafficSimulationConfig `yaml:"traffic-simulation" json:"traffic-simulation"`
 	// LatencyCalculator is the name of the latency calculator to use in the simulation of the response latencies.
 	// The default calculation is based on the current load of the simulator and on the configured latency
 	// parameters, e.g., time-to-first-token and prefill-time-per-token. It is a top-level flag, not part of
@@ -441,6 +444,17 @@ type LatenciesConfig struct {
 	// - When the factor is x (where x > 1.0) and there are MaxNumSeqs requests, the total time will be multiplied by x.
 	// - The extra time then decreases multiplicatively to 1.0 when the number of requests is less than MaxNumSeqs.
 	TimeFactorUnderLoad float64 `yaml:"time-factor-under-load" json:"time-factor-under-load" admin:"configurable" rebuild:"latency"`
+}
+
+// TrafficSimulationConfig identifies a traffic profile and controls whether
+// requests may override their logical token counts and latency.
+type TrafficSimulationConfig struct {
+	// Profile is the stable startup profile identity used for observability.
+	Profile string `yaml:"profile" json:"profile"`
+	// Scenario is the current runtime scenario name.
+	Scenario string `yaml:"scenario" json:"scenario" admin:"configurable"`
+	// EnableTestControls enables the X-Mock-* request headers.
+	EnableTestControls bool `yaml:"enable-test-controls" json:"enable-test-controls" admin:"configurable"`
 }
 
 // NewConfig returns a Configuration populated with the documented defaults of
@@ -776,6 +790,7 @@ func init() {
 	// separate walk over LatenciesConfig.
 	collectFieldMeta(reflect.TypeOf(Configuration{}))
 	collectFieldMeta(reflect.TypeOf(LatenciesConfig{}))
+	collectFieldMeta(reflect.TypeOf(TrafficSimulationConfig{}))
 
 	latenciesYAMLKeys = yamlKeysOf(reflect.TypeOf(LatenciesConfig{}))
 	latenciesYAMLKeySet = make(map[string]bool, len(latenciesYAMLKeys))
@@ -887,6 +902,32 @@ func unfoldNestedLatencies(raw map[string]json.RawMessage) error {
 	return nil
 }
 
+// unfoldNestedTrafficSimulation expands the traffic-simulation object so its
+// admin-configurable fields can be checked using the same metadata as the
+// other configuration groups.
+func unfoldNestedTrafficSimulation(raw map[string]json.RawMessage) error {
+	nestedRaw, ok := raw["traffic-simulation"]
+	if !ok {
+		return nil
+	}
+
+	var nested map[string]json.RawMessage
+	if err := json.Unmarshal(nestedRaw, &nested); err != nil {
+		return fmt.Errorf(`field "traffic-simulation": %w`, err)
+	}
+	for key, value := range nested {
+		if _, configurable := configurableFields[key]; !configurable {
+			return fmt.Errorf("field '%s' is not traffic-simulation configurable", key)
+		}
+		if _, exists := raw[key]; exists {
+			return fmt.Errorf("traffic-simulation settings mix the flat layout (%s) with the nested traffic-simulation object; use only one", key)
+		}
+		raw[key] = value
+	}
+	delete(raw, "traffic-simulation")
+	return nil
+}
+
 // foldFlatLatencies moves the legacy flat top-level latency keys in raw into
 // a nested "latencies" object, the reverse of unfoldNestedLatencies. Update
 // calls this after validating raw's keys against configurableFields (which
@@ -912,6 +953,25 @@ func foldFlatLatencies(raw map[string]json.RawMessage) error {
 	return nil
 }
 
+func foldFlatTrafficSimulation(raw map[string]json.RawMessage) error {
+	nested := make(map[string]json.RawMessage)
+	for _, key := range []string{"scenario", "enable-test-controls"} {
+		if value, ok := raw[key]; ok {
+			nested[key] = value
+			delete(raw, key)
+		}
+	}
+	if len(nested) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(nested)
+	if err != nil {
+		return fmt.Errorf("failed to marshal traffic-simulation: %w", err)
+	}
+	raw["traffic-simulation"] = data
+	return nil
+}
+
 // Update validates a partial JSON update and returns:
 //   - next: a deep copy of the receiver with the body's changes applied.
 //     Ready to be atomically swapped in by the caller.
@@ -930,6 +990,9 @@ func (c *Configuration) Update(body []byte) (*Configuration, *Configuration, boo
 	}
 
 	if err := unfoldNestedLatencies(raw); err != nil {
+		return nil, nil, false, err
+	}
+	if err := unfoldNestedTrafficSimulation(raw); err != nil {
 		return nil, nil, false, err
 	}
 
@@ -967,6 +1030,9 @@ func (c *Configuration) Update(body []byte) (*Configuration, *Configuration, boo
 	}
 
 	if err := foldFlatLatencies(raw); err != nil {
+		return nil, nil, false, err
+	}
+	if err := foldFlatTrafficSimulation(raw); err != nil {
 		return nil, nil, false, err
 	}
 	// re-marshal after normalization and folding so subsequent Unmarshal calls

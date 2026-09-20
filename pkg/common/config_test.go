@@ -92,6 +92,17 @@ var _ = Describe("ApplyAdminUpdate", func() {
 		Expect(next.FailureTypes).To(Equal([]string{FailureTypeInvalidRequest}))
 	})
 
+	It("updates the traffic simulation scenario without mutating the active configuration", func() {
+		base.TrafficSimulation.Profile = "vllm-normal-chat"
+		base.TrafficSimulation.Scenario = "default"
+
+		next, _, _, err := base.Update([]byte(`{"traffic-simulation":{"scenario":"overloaded"}}`))
+		Expect(err).ToNot(HaveOccurred())
+		Expect(next.TrafficSimulation.Profile).To(Equal("vllm-normal-chat"))
+		Expect(next.TrafficSimulation.Scenario).To(Equal("overloaded"))
+		Expect(base.TrafficSimulation.Scenario).To(Equal("default"))
+	})
+
 	It("returns the parsed fake-metrics partial via update.FakeMetrics", func() {
 		// A fake-metrics partial only makes sense against an already-configured
 		// FakeMetrics value (see Configuration.Update); the base fixture starts
@@ -394,6 +405,7 @@ var _ = Describe("admin struct tags", func() {
 		}
 		checkTags(reflect.TypeOf(Configuration{}))
 		checkTags(reflect.TypeOf(LatenciesConfig{}))
+		checkTags(reflect.TypeOf(TrafficSimulationConfig{}))
 	})
 
 	It("configurableFields contains exactly the expected entries with their rebuild tags", func() {
@@ -417,6 +429,8 @@ var _ = Describe("admin struct tags", func() {
 			"failure-types":                     "",
 			"fake-metrics":                      "",
 			"image-emission-rate":               "",
+			"scenario":                          "",
+			"enable-test-controls":              "",
 		}))
 	})
 

@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 )
 
 const (
@@ -124,6 +125,20 @@ type Request interface {
 	SetSendImage(bool)
 	// SendImage reports whether an image will be emitted with this response.
 	SendImage() bool
+	// GetSimulationOverrides returns request-scoped traffic simulation controls.
+	GetSimulationOverrides() SimulationOverrides
+	// SetSimulationOverrides freezes request-scoped traffic simulation controls.
+	SetSimulationOverrides(SimulationOverrides)
+}
+
+// SimulationOverrides holds optional request-scoped token and latency controls.
+// Nil fields preserve normal simulator behaviour.
+type SimulationOverrides struct {
+	PromptTokens       *int
+	CachedPromptTokens *int
+	OutputTokens       *int
+	TTFT               *time.Duration
+	ITL                *time.Duration
 }
 
 // baseRequest contains base completions request related information
@@ -153,6 +168,8 @@ type baseRequest struct {
 	tokenizedPromptForEcho *Tokenized
 	// mmFeatures holds multimodal metadata produced by the tokenizer, exists only for multimodal requests
 	mmFeatures *RenderMMFeatures
+	// simulationOverrides are frozen by the HTTP handler before queueing.
+	simulationOverrides SimulationOverrides
 }
 
 // baseCompletionsRequest contains base completions request related information
@@ -297,6 +314,9 @@ func (b *baseRequest) IsDoRemotePrefill() bool {
 // GetNumberOfCachedPromptTokens returns the number of tokens in the prompt that are
 // in the local KV Cache
 func (b *baseRequest) GetNumberOfCachedPromptTokens() int {
+	if b.simulationOverrides.CachedPromptTokens != nil {
+		return *b.simulationOverrides.CachedPromptTokens
+	}
 	return b.cachedPromptTokens
 }
 
@@ -373,6 +393,23 @@ func (b *baseRequest) SetMMFeatures(mmFeatures *RenderMMFeatures) {
 
 func (b *baseRequest) SetSendImage(bool) {}
 func (b *baseRequest) SendImage() bool   { return false }
+
+func (b *baseRequest) GetSimulationOverrides() SimulationOverrides {
+	return b.simulationOverrides
+}
+
+func (b *baseRequest) SetSimulationOverrides(overrides SimulationOverrides) {
+	b.simulationOverrides = overrides
+}
+
+// EffectivePromptTokens returns the logical prompt count when the request
+// carries a traffic-simulation override, otherwise the tokenized prompt size.
+func EffectivePromptTokens(req Request) int {
+	if overridden := req.GetSimulationOverrides().PromptTokens; overridden != nil {
+		return *overridden
+	}
+	return req.TokenizedPrompt().Length()
+}
 
 func (b *baseCompletionsRequest) IncludeUsage() bool {
 	return !b.Stream || (b.StreamOptions != nil && b.StreamOptions.IncludeUsage)

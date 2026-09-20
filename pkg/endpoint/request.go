@@ -161,6 +161,13 @@ func (b *baseRequestContext) validateTokenizedRequest() (string, int) {
 	promptTokens := getNumberOfPromptTokens(b.Request())
 	maxModelLen := b.runtime.Config().MaxModelLen
 	mode := b.runtime.Config().Mode
+	overrides := b.Request().GetSimulationOverrides()
+	if cached := overrides.CachedPromptTokens; cached != nil && *cached > promptTokens {
+		return fmt.Sprintf("X-Mock-Cached-Tokens must not exceed prompt tokens (%d)", promptTokens), fasthttp.StatusBadRequest
+	}
+	if output := overrides.OutputTokens; output != nil && *output > maxModelLen-promptTokens {
+		return fmt.Sprintf("X-Mock-Output-Tokens must not exceed the remaining context window (%d)", maxModelLen-promptTokens), fasthttp.StatusBadRequest
+	}
 
 	if !common.ValidateContextWindow(promptTokens, maxModelLen, mode) {
 		var message string
@@ -245,12 +252,13 @@ func (reqCtx *baseRequestContext) HandleRequest() (ResponseContext, *api.Error) 
 	}
 
 	numOfInputTokens := getNumberOfPromptTokens(req)
+	cachedPromptTokens := req.GetNumberOfCachedPromptTokens()
 	usageData := api.Usage{
 		PromptTokens:     numOfInputTokens,
 		CompletionTokens: completionTokens,
 		TotalTokens:      numOfInputTokens + completionTokens,
 		PromptTokensDetails: &api.PromptTokensDetails{
-			CachedTokens: prefixCacheStats.CachedTokens,
+			CachedTokens: cachedPromptTokens,
 		},
 	}
 

@@ -151,6 +151,11 @@ func (d *DefaultDataset) Close() error {
 
 // GetResponseTokens returns response tokens and finishReason for the given request
 func (d *DefaultDataset) GetResponseTokens(req api.Request) (*api.Tokenized, string, error) {
+	if outputTokens := req.GetSimulationOverrides().OutputTokens; outputTokens != nil {
+		responseTokens := d.generatePresetRandomTokens(*outputTokens)
+		return &responseTokens, common.LengthFinishReason, nil
+	}
+
 	maxRespTokens, isMaxTokensInReq := d.calculateResponseMaxLen(req)
 
 	numOfRespTokens := 0
@@ -186,7 +191,7 @@ func (d *DefaultDataset) GetResponseTokens(req api.Request) (*api.Tokenized, str
 // If max-tokens is not defined - use the remaining room in the context window.
 // boolean returned value defines whether max tokens number was passed in the request
 func (d *DefaultDataset) calculateResponseMaxLen(req api.Request) (int, bool) {
-	remaining := d.maxModelLen - req.TokenizedPrompt().Length()
+	remaining := d.maxModelLen - api.EffectivePromptTokens(req)
 	maxTokens := req.GetMaxCompletionTokens()
 
 	if maxTokens != nil {

@@ -58,6 +58,7 @@ const (
 	CacheConfigName                   = "vllm:cache_config_info"
 	PrefixCacheHitsTotalMetricName    = "vllm:prefix_cache_hits_total"
 	PrefixCacheQueriesTotalMetricName = "vllm:prefix_cache_queries_total"
+	SimulationInfoMetricName          = "llmd_simulation_info"
 )
 
 const (
@@ -118,6 +119,8 @@ type metricsData struct {
 	kvCacheUsageChan common.Channel[common.MetricInfo]
 	// registry is a Prometheus registry
 	registry *prometheus.Registry
+	// simulationInfo identifies the configured engine, profile, and scenario.
+	simulationInfo *prometheus.GaugeVec
 	// loraInfo is prometheus gauge
 	loraInfo *prometheus.GaugeVec
 	// runningRequests is prometheus gauge
@@ -185,6 +188,9 @@ func (s *SimContext) createAndRegisterPrometheus(ctx context.Context) error {
 	maxNumberOfWaitingRequests := s.Config().MaxWaitingQueueLength * 2
 
 	s.metrics.registry = prometheus.NewRegistry()
+	if err := s.createAndRegisterSimulationInfoMetric(); err != nil {
+		return err
+	}
 
 	if err := s.createAndRegisterLoraInfoMetric(); err != nil {
 		return err
@@ -417,6 +423,26 @@ func (s *SimContext) createAndRegisterPrometheus(ctx context.Context) error {
 	}
 
 	return s.setInitialPrometheusMetrics(cacheConfig)
+}
+
+func (s *SimContext) createAndRegisterSimulationInfoMetric() error {
+	s.metrics.simulationInfo = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: SimulationInfoMetricName,
+			Help: "Configured traffic simulation identity.",
+		},
+		[]string{"engine", "profile", "scenario"},
+	)
+	if err := s.metrics.registry.Register(s.metrics.simulationInfo); err != nil {
+		return err
+	}
+	s.setSimulationInfo(s.Config(), 1)
+	return nil
+}
+
+func (s *SimContext) setSimulationInfo(cfg *common.Configuration, value float64) {
+	s.metrics.simulationInfo.WithLabelValues(cfg.EngineName, cfg.TrafficSimulation.Profile,
+		cfg.TrafficSimulation.Scenario).Set(value)
 }
 
 // setInitialPrometheusMetrics sends the default values to prometheus or

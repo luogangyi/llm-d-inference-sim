@@ -471,7 +471,7 @@ func (s *Simulator) simulateResponseProcessing(respCtx endpoint.ResponseContext)
 			if respCtx.ResponseTokens() != nil {
 				for i, token := range respCtx.ResponseTokens().Tokens {
 					if i != 0 {
-						s.Context.simulateInterTokenLatency()
+						s.Context.simulateInterTokenLatency(respCtx)
 						nTokens++
 					}
 
@@ -496,7 +496,7 @@ func (s *Simulator) simulateResponseProcessing(respCtx endpoint.ResponseContext)
 					args := tc.Function.TokenizedArguments()
 					for i, token := range args.Tokens {
 						if i != 0 {
-							s.Context.simulateInterTokenLatency()
+							s.Context.simulateInterTokenLatency(respCtx)
 							nTokens++
 						}
 						respInfo := endpoint.ResponseInfo{

@@ -23,7 +23,7 @@ import (
 )
 
 func getNumberOfPromptTokens(req api.Request) int {
-	return req.TokenizedPrompt().Length()
+	return api.EffectivePromptTokens(req)
 }
 
 func validateRequest(req api.Request) *api.Error {
