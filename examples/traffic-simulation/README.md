@@ -12,4 +12,4 @@ The `*-zero-delay.yaml` files remove simulated inference delay. Use them to meas
 
 All files use a mock model name with no `render-url`, so the simulator selects its built-in tokenizer and does not download model weights. Use a render service and a real model name when a test needs exact tokenizer accounting.
 
-`vllm-ascend-*` and `sglang-openai-*` remain OpenAI-compatible profiles. The SGLang native endpoints are a later milestone because their wire contract must be captured from the production SGLang version first.
+`vllm-ascend-*` and `sglang-openai-*` remain OpenAI-compatible profiles. `sglang-native-normal-chat.yaml` enables the SGLang engine's native `/generate` and model query endpoints while retaining the common OpenAI-compatible routes.

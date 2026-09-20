@@ -28,6 +28,7 @@ import (
 
 	"github.com/llm-d/llm-d-inference-sim/pkg/common"
 	"github.com/llm-d/llm-d-inference-sim/pkg/communication"
+	"github.com/llm-d/llm-d-inference-sim/pkg/engine/sglang"
 	"github.com/llm-d/llm-d-inference-sim/pkg/engine/vllm"
 )
 
@@ -60,7 +61,8 @@ type Engine interface {
 // registry maps each engine backend's name to its constructor. Adding a
 // backend means adding one entry here.
 var registry = map[string]func() Engine{
-	"vllm": func() Engine { return vllm.New() },
+	"sglang": func() Engine { return sglang.New() },
+	"vllm":   func() Engine { return vllm.New() },
 }
 
 // Select returns the Engine implementation for the named engine backend.

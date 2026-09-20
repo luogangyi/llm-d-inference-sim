@@ -65,6 +65,14 @@ var _ = Describe("traffic simulation profiles", func() {
 			maxNumSeqs:        600,
 			interTokenMillis:  16,
 		},
+		{
+			name:              "sglang-native-normal-chat.yaml",
+			simulationProfile: "sglang-native-normal-chat",
+			model:             "mock-sglang-native",
+			servedModel:       "Qwen/Qwen3-32B-SGLang",
+			maxNumSeqs:        600,
+			interTokenMillis:  16,
+		},
 	}
 
 	DescribeTable("loads the documented profile", func(profile trafficProfile) {
@@ -89,6 +97,7 @@ var _ = Describe("traffic simulation profiles", func() {
 		Entry("vLLM", profiles[0]),
 		Entry("vLLM Ascend", profiles[1]),
 		Entry("SGLang OpenAI", profiles[2]),
+		Entry("SGLang native", profiles[3]),
 	)
 
 	DescribeTable("serves OpenAI client prompts", func(profile trafficProfile) {
@@ -129,5 +138,6 @@ var _ = Describe("traffic simulation profiles", func() {
 		Entry("vLLM", profiles[0]),
 		Entry("vLLM Ascend", profiles[1]),
 		Entry("SGLang OpenAI", profiles[2]),
+		Entry("SGLang native", profiles[3]),
 	)
 })
