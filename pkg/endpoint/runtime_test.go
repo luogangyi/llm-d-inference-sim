@@ -59,3 +59,4 @@ func (f *fakeRuntime) CreateEmbeddings(req *api.EmbeddingRequest) (*api.Embeddin
 }
 func (f *fakeRuntime) CreateModelsResponse() *api.ModelsResponse { return nil }
 func (f *fakeRuntime) ApplyConfigUpdate(body []byte) error       { return nil }
+func (f *fakeRuntime) RecordStreamFault(string, string, string)  {}

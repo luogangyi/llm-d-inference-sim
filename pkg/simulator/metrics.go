@@ -59,6 +59,7 @@ const (
 	PrefixCacheHitsTotalMetricName    = "vllm:prefix_cache_hits_total"
 	PrefixCacheQueriesTotalMetricName = "vllm:prefix_cache_queries_total"
 	SimulationInfoMetricName          = "llmd_simulation_info"
+	StreamFaultsMetricName            = "llmd_simulation_stream_faults_total"
 )
 
 const (
@@ -121,6 +122,8 @@ type metricsData struct {
 	registry *prometheus.Registry
 	// simulationInfo identifies the configured engine, profile, and scenario.
 	simulationInfo *prometheus.GaugeVec
+	// streamFaults counts intentional stream faults by their simulation identity.
+	streamFaults *prometheus.CounterVec
 	// loraInfo is prometheus gauge
 	loraInfo *prometheus.GaugeVec
 	// runningRequests is prometheus gauge
@@ -189,6 +192,9 @@ func (s *SimContext) createAndRegisterPrometheus(ctx context.Context) error {
 
 	s.metrics.registry = prometheus.NewRegistry()
 	if err := s.createAndRegisterSimulationInfoMetric(); err != nil {
+		return err
+	}
+	if err := s.createAndRegisterStreamFaultsMetric(); err != nil {
 		return err
 	}
 
@@ -443,6 +449,23 @@ func (s *SimContext) createAndRegisterSimulationInfoMetric() error {
 func (s *SimContext) setSimulationInfo(cfg *common.Configuration, value float64) {
 	s.metrics.simulationInfo.WithLabelValues(cfg.EngineName, cfg.TrafficSimulation.Profile,
 		cfg.TrafficSimulation.Scenario).Set(value)
+}
+
+func (s *SimContext) createAndRegisterStreamFaultsMetric() error {
+	s.metrics.streamFaults = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: StreamFaultsMetricName,
+			Help: "Intentional stream faults emitted by the simulator.",
+		},
+		[]string{"profile", "scenario", "type"},
+	)
+	return s.metrics.registry.Register(s.metrics.streamFaults)
+}
+
+// RecordStreamFault increments the counter for a stream fault using the
+// traffic simulation identity captured when the request began.
+func (s *SimContext) RecordStreamFault(profile, scenario, faultType string) {
+	s.metrics.streamFaults.WithLabelValues(profile, scenario, faultType).Inc()
 }
 
 // setInitialPrometheusMetrics sends the default values to prometheus or

@@ -28,13 +28,14 @@ import (
 var errStreamFaultDisconnect = errors.New("stream fault disconnect")
 
 type streamFaultWriter struct {
-	writer *bufio.Writer
-	policy api.StreamFaultPolicy
-	chunks int
+	writer  *bufio.Writer
+	policy  api.StreamFaultPolicy
+	onFault func(string)
+	chunks  int
 }
 
-func newStreamFaultWriter(writer *bufio.Writer, policy api.StreamFaultPolicy) *streamFaultWriter {
-	return &streamFaultWriter{writer: writer, policy: policy}
+func newStreamFaultWriter(writer *bufio.Writer, policy api.StreamFaultPolicy, onFault func(string)) *streamFaultWriter {
+	return &streamFaultWriter{writer: writer, policy: policy, onFault: onFault}
 }
 
 func (w *streamFaultWriter) send(chunk sseChunk) error {
@@ -50,14 +51,22 @@ func (w *streamFaultWriter) send(chunk sseChunk) error {
 	}
 	w.chunks++
 	if w.policy.StallAfterChunks > 0 && w.chunks == w.policy.StallAfterChunks {
+		w.recordFault("stall")
 		if w.policy.StallDuration > 0 {
 			time.Sleep(w.policy.StallDuration)
 		}
 	}
 	if w.policy.DisconnectAfterChunks > 0 && w.chunks >= w.policy.DisconnectAfterChunks {
+		w.recordFault("disconnect")
 		return errStreamFaultDisconnect
 	}
 	return nil
+}
+
+func (w *streamFaultWriter) recordFault(faultType string) {
+	if w.onFault != nil {
+		w.onFault(faultType)
+	}
 }
 
 // corruptUsageChunk changes only the numeric usage totals in an OpenAI JSON

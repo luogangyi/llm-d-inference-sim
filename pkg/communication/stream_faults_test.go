@@ -30,11 +30,14 @@ import (
 var _ = Describe("stream fault writer", func() {
 	It("writes the selected number of frames before disconnecting", func() {
 		var body bytes.Buffer
-		writer := newStreamFaultWriter(bufio.NewWriter(&body), api.StreamFaultPolicy{DisconnectAfterChunks: 2})
+		var faults []string
+		writer := newStreamFaultWriter(bufio.NewWriter(&body), api.StreamFaultPolicy{DisconnectAfterChunks: 2},
+			func(fault string) { faults = append(faults, fault) })
 
 		Expect(writer.send(&jsonDataChunk{data: map[string]int{"chunk": 1}})).To(Succeed())
 		Expect(writer.send(&jsonDataChunk{data: map[string]int{"chunk": 2}})).To(MatchError(errStreamFaultDisconnect))
 		Expect(body.String()).To(Equal("data: {\"chunk\":1}\n\ndata: {\"chunk\":2}\n\n"))
+		Expect(faults).To(Equal([]string{"disconnect"}))
 	})
 
 	It("changes only total_tokens in an OpenAI usage frame", func() {

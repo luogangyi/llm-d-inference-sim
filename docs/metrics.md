@@ -29,3 +29,5 @@ Currently supported are the following metrics:
 | vllm:cache_config_info | Information of the LLMEngine CacheConfig |
 | vllm:prefix_cache_hits_total | Prefix cache hits, in terms of number of cached tokens |
 | vllm:prefix_cache_queries_total | Prefix cache queries, in terms of number of queried tokens |
+| llmd_simulation_info | Configured engine, traffic profile, and scenario |
+| llmd_simulation_stream_faults_total | Intentional SSE faults by traffic profile, scenario, and fault type |

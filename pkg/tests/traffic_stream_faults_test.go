@@ -110,4 +110,21 @@ var _ = Describe("traffic simulation stream faults", func() {
 		Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
 		Expect(strings.ToLower(string(body))).To(ContainSubstring("stream"))
 	})
+
+	It("records an omitted terminal frame with the active simulation identity", func() {
+		client, err := startTrafficControlsServer(context.Background(), true)
+		Expect(err).NotTo(HaveOccurred())
+
+		req := trafficControlsRequest(true)
+		req.Header.Set("X-Mock-Omit-Done", "true")
+		_, body, _ := readTrafficStream(client, req)
+		Expect(body).ToNot(ContainSubstring("data: [DONE]"))
+
+		metricsResp, err := client.Get(metricsUrl)
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { Expect(metricsResp.Body.Close()).To(Succeed()) }()
+		metricsBody, err := io.ReadAll(metricsResp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(metricsBody)).To(ContainSubstring(`llmd_simulation_stream_faults_total{profile="vllm-normal-chat",scenario="default",type="omit_done"} 1`))
+	})
 })

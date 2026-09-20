@@ -471,7 +471,14 @@ func (c *Communication) sendStream(ctx *fasthttp.RequestCtx, channel common.Chan
 
 	go func() {
 		w := bufio.NewWriter(pw)
-		streamWriter := newStreamFaultWriter(w, first.RespCtx.RequestContext().Request().GetSimulationOverrides().StreamFaults)
+		var recordFault func(string)
+		if c.runtime != nil {
+			config := c.runtime.Config()
+			recordFault = func(faultType string) {
+				c.runtime.RecordStreamFault(config.TrafficSimulation.Profile, config.TrafficSimulation.Scenario, faultType)
+			}
+		}
+		streamWriter := newStreamFaultWriter(w, first.RespCtx.RequestContext().Request().GetSimulationOverrides().StreamFaults, recordFault)
 		var respCtx endpoint.ResponseContext
 		state := newStreamState(numChoices)
 
@@ -623,10 +630,15 @@ func (c *Communication) finalizeStream(ctx *fasthttp.RequestCtx, w *streamFaultW
 		}
 	}
 	policy := respContext.RequestContext().Request().GetSimulationOverrides().StreamFaults
-	if !policy.OmitUsage {
+	if policy.OmitUsage {
+		if respBuilder.createUsageChunk(state.respCtxPerChoice) != nil {
+			w.recordFault("omit_usage")
+		}
+	} else {
 		usageChunk := respBuilder.createUsageChunk(state.respCtxPerChoice)
 		if policy.CorruptUsage && usageChunk != nil {
 			usageChunk = corruptUsageChunk{chunk: usageChunk}
+			w.recordFault("corrupt_usage")
 		}
 		if !c.sendOrFail(ctx, w, usageChunk, "Sending usage chunk failed, ") {
 			return
@@ -634,6 +646,8 @@ func (c *Communication) finalizeStream(ctx *fasthttp.RequestCtx, w *streamFaultW
 	}
 	if !policy.OmitDone {
 		c.sendOrFail(ctx, w, respBuilder.createDoneChunk(), "Sending [DONE] chunk failed, ")
+	} else if respBuilder.createDoneChunk() != nil {
+		w.recordFault("omit_done")
 	}
 }
 

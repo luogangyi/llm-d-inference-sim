@@ -74,4 +74,6 @@ type Runtime interface {
 	CreateModelsResponse() *api.ModelsResponse
 	// ApplyConfigUpdate validates and applies a partial admin-config update.
 	ApplyConfigUpdate(body []byte) error
+	// RecordStreamFault increments the counter for an intentional SSE fault.
+	RecordStreamFault(profile, scenario, faultType string)
 }
