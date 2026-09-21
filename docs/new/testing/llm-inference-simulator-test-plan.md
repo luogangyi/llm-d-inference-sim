@@ -264,3 +264,23 @@ go test ./pkg/tests -ginkgo.focus='traffic simulation|SGLang native' -count=1 -v
 ```
 
 在测试机执行时使用已安装的 Go、Docker 镜像代理和测试环境变量；性能及 soak 命令必须在运行记录中完整保存，不能只保存终端摘要。
+
+### 10.1 可执行脚本
+
+`scripts/testing/run-traffic-simulation.sh` 启动一个 Profile，并调用不依赖第三方包的 Python HTTP 客户端。脚本把服务日志、Profile、指标、提交号、参数和 JSON 结果写入 `artifacts/traffic-simulation/`。
+
+```bash
+scripts/testing/run-traffic-simulation.sh \
+  --profile examples/traffic-simulation/profiles/vllm-zero-delay.yaml \
+  --suite functional
+
+scripts/testing/run-traffic-simulation.sh \
+  --profile examples/traffic-simulation/profiles/sglang-native-normal-chat.yaml \
+  --suite concurrency --concurrency 100 --requests-per-worker 10
+
+scripts/testing/run-traffic-simulation.sh \
+  --profile examples/traffic-simulation/profiles/vllm-zero-delay.yaml \
+  --suite faults
+```
+
+`functional` 验证健康、模型、指标、非流式 chat、流式 completion、embedding 和原生 SGLang 路由；`concurrency` 使用固定数量的并发 worker 输出请求数、RPS、p50 和 p95；`faults` 通过管理接口开启测试控制，验证断流、缺失 DONE 及其指标。更高并发、open-loop 和 soak 按本方案第 6 节在独立环境执行。
