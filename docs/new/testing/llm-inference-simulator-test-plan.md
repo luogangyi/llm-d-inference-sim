@@ -284,3 +284,18 @@ scripts/testing/run-traffic-simulation.sh \
 ```
 
 `functional` 验证健康、模型、指标、非流式 chat、流式 completion、embedding 和原生 SGLang 路由；`concurrency` 使用固定数量的并发 worker 输出请求数、RPS、p50 和 p95；`faults` 通过管理接口开启测试控制，验证断流、缺失 DONE 及其指标。更高并发、open-loop 和 soak 按本方案第 6 节在独立环境执行。
+
+### 10.2 Higress 全链路回归
+
+`scripts/testing/run-higress-traffic-simulation.sh` 在 Kubernetes 节点启动模拟器，通过无 selector 的 Service 和 EndpointSlice 将节点地址注册为上游，再创建 `ingressClassName: higress` 的 Ingress。客户端仅访问 Higress HTTP NodePort，因此健康、OpenAI 请求、SSE、并发和故障流量都经过网关。
+
+```bash
+scripts/testing/test-higress-traffic-simulation.sh
+
+scripts/testing/run-higress-traffic-simulation.sh \
+  --profile examples/traffic-simulation/profiles/vllm-zero-delay.yaml \
+  --node-ip 192.168.13.5 \
+  --suite all --concurrency 20 --requests-per-worker 2
+```
+
+前一个命令为脚本单元测试，验证生成的 Service、EndpointSlice 和 Higress Ingress 资源。后一个命令为 e2e：在运行前要求集群已安装 Higress，且 `higress-system/higress-gateway` 暴露 HTTP NodePort。默认在结束时删除测试 Ingress、Service 和 EndpointSlice；传入 `--keep-resources` 可保留它们用于排障。结果目录保存实际网关端口、资源清单、服务日志、所有套件结果和经网关抓取的指标。
