@@ -104,9 +104,8 @@ class Endpoint:
         return connection_type(self.host, self.port, timeout=timeout)
 
 
-def first_content_token(endpoint, body, headers, barrier, timeout):
+def first_content_token(endpoint, body, headers, timeout):
     try:
-        barrier.wait(timeout=timeout)
         started = time.monotonic()
         connection = endpoint.connection(timeout)
         connection.request("POST", endpoint.target, body=body, headers=headers)
@@ -170,38 +169,25 @@ def request_specs(protocol, endpoints, model, prompt, max_tokens, api_key, concu
     return specs
 
 
-def run_concurrency(specs, timeout):
-    concurrency = len(specs)
-    barrier = threading.Barrier(concurrency)
-    started = time.monotonic()
-
-    def run_request(spec):
-        result = first_content_token(
-            spec["endpoint"], spec["body"], spec["headers"], barrier, timeout
-        )
-        result["protocol"] = spec["protocol"]
-        return result
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
-        results = list(executor.map(run_request, specs))
+def summarize_results(results, specs, elapsed, concurrency, duration=None):
     successes = [result for result in results if result["ok"]]
     failures = [result for result in results if not result["ok"]]
     ttft = [result["ttft_s"] for result in successes]
     ttfb = [result["ttfb_s"] for result in successes]
     protocols = {}
-    for name in sorted({result["protocol"] for result in results}):
+    for name in sorted({spec["protocol"] for spec in specs}):
         protocol_results = [result for result in results if result["protocol"] == name]
         protocols[name] = {
             "requests": len(protocol_results),
             "successes": sum(result["ok"] for result in protocol_results),
             "failures": sum(not result["ok"] for result in protocol_results),
         }
-    return {
+    summary = {
         "concurrency": concurrency,
-        "requests": concurrency,
+        "requests": len(results),
         "successes": len(successes),
         "failures": len(failures),
-        "elapsed_s": time.monotonic() - started,
+        "elapsed_s": elapsed,
         "protocols": protocols,
         "input_body_bytes": {
             name: len(next(spec["body"] for spec in specs if spec["protocol"] == name))
@@ -211,6 +197,51 @@ def run_concurrency(specs, timeout):
         "ttfb_s": {key: percentile(ttfb, value) for key, value in (("p50", 50), ("p95", 95), ("p99", 99))},
         "errors": dict(Counter(f"{result['protocol']}: {result['error']}" for result in failures)),
     }
+    if duration is not None:
+        summary["duration_s"] = duration
+    return summary
+
+
+def run_concurrency(specs, timeout):
+    concurrency = len(specs)
+    barrier = threading.Barrier(concurrency)
+    started = time.monotonic()
+
+    def run_request(spec):
+        barrier.wait(timeout=timeout)
+        result = first_content_token(spec["endpoint"], spec["body"], spec["headers"], timeout)
+        result["protocol"] = spec["protocol"]
+        return result
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+        results = list(executor.map(run_request, specs))
+    return summarize_results(results, specs, time.monotonic() - started, concurrency)
+
+
+def run_duration(specs, timeout, duration):
+    concurrency = len(specs)
+    barrier = threading.Barrier(concurrency)
+    started = time.monotonic()
+    deadline = started + duration
+
+    def run_worker(spec):
+        barrier.wait(timeout=timeout)
+        results = []
+        while time.monotonic() < deadline:
+            request_timeout = deadline - time.monotonic()
+            if request_timeout <= 0:
+                break
+            result = first_content_token(
+                spec["endpoint"], spec["body"], spec["headers"], request_timeout
+            )
+            result["protocol"] = spec["protocol"]
+            results.append(result)
+        return results
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+        worker_results = list(executor.map(run_worker, specs))
+    results = [result for worker in worker_results for result in worker]
+    return summarize_results(results, specs, time.monotonic() - started, concurrency, duration)
 
 
 def self_test():
@@ -249,6 +280,7 @@ def main():
     parser.add_argument("--prompt-tokens", type=int, help="Generate this many input tokens using the calibrated a-space pattern")
     parser.add_argument("--max-tokens", type=int, default=16384)
     parser.add_argument("--concurrency", type=parse_concurrencies, default=(100, 500, 1000), help="Comma-separated concurrency levels")
+    parser.add_argument("--duration", type=float, help="Sustain each concurrency level for this many seconds")
     parser.add_argument("--timeout", type=float, default=180, help="Request and barrier timeout in seconds")
     parser.add_argument("--output-dir", help="Directory for JSON results")
     parser.add_argument("--self-test", action="store_true", help="Run local unit checks and exit")
@@ -271,6 +303,8 @@ def main():
         endpoints = {args.protocol: Endpoint(args.endpoint)}
     if args.max_tokens < 1:
         parser.error("--max-tokens must be positive")
+    if args.duration is not None and args.duration <= 0:
+        parser.error("--duration must be positive")
     api_key = os.getenv(args.api_key_env)
     if not api_key:
         parser.error(f"environment variable {args.api_key_env} is required")
@@ -286,6 +320,7 @@ def main():
                 f"prompt_tokens={args.prompt_tokens if args.prompt_tokens is not None else 'short'}",
                 f"max_tokens={args.max_tokens}",
                 "concurrencies=" + ",".join(str(value) for value in args.concurrency),
+                f"duration_s={args.duration if args.duration is not None else 'single-batch'}",
                 f"openai_endpoint={args.openai_endpoint or args.endpoint}",
                 f"anthropic_endpoint={args.anthropic_endpoint or args.endpoint}",
             )
@@ -295,7 +330,7 @@ def main():
     summaries = []
     for concurrency in args.concurrency:
         specs = request_specs(args.protocol, endpoints, args.model, prompt, args.max_tokens, api_key, concurrency)
-        summary = run_concurrency(specs, args.timeout)
+        summary = run_duration(specs, args.timeout, args.duration) if args.duration else run_concurrency(specs, args.timeout)
         (output_dir / f"ttft-{concurrency}-summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(json.dumps(summary, ensure_ascii=False), flush=True)
         summaries.append(summary)

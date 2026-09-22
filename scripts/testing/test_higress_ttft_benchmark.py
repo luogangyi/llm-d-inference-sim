@@ -113,6 +113,16 @@ class EndToEndTest(unittest.TestCase):
             self.assertEqual(result["protocols"]["openai"]["requests"], 2)
             self.assertEqual(result["protocols"]["anthropic"]["requests"], 2)
             self.assertEqual(result["successes"], 4)
+            duration_dir = Path(output_dir) / "duration"
+            command[-1] = str(duration_dir)
+            command.extend(["--duration", "0.1"])
+            completed = subprocess.run(command, env=environment, capture_output=True, text=True, check=False)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads((duration_dir / "ttft-summary.json").read_text())["summaries"][0]
+            self.assertEqual(result["duration_s"], 0.1)
+            self.assertGreaterEqual(result["requests"], 4)
+            self.assertEqual(result["successes"], result["requests"])
+            self.assertLess(result["elapsed_s"], 0.5)
 
 
 if __name__ == "__main__":
