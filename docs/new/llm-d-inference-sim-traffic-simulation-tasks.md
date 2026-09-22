@@ -29,3 +29,4 @@
 | 2026-09-20 | M3 实现 SSE 断流、停顿、usage 损坏、usage/DONE 省略及运行时场景更新；单元测试、HTTP e2e 和预检通过。 |
 | 2026-09-20 | M4 注册 SGLang engine，提供原生 `/generate`、模型查询和健康路由；原生流式响应使用累计文本，并保留 OpenAI 兼容路由。 |
 | 2026-09-20 | M5 开始实现流故障 Prometheus 计数器；标签使用请求开始时的 Profile 和 Scenario 快照。 |
+| 2026-09-22 | M5 增加 Higress 流式 TTFT 压测脚本。脚本通过环境变量读取鉴权密钥，记录每个并发档的 TTFB、TTFT 分位数和请求失败原因；本地 SSE 端到端测试及目标 Higress 实测完成。 |
