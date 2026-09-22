@@ -145,30 +145,71 @@ def first_content_token(endpoint, body, headers, barrier, timeout):
         return {"ok": False, "error": f"{type(error).__name__}: {str(error)[:400]}"}
 
 
-def run_concurrency(endpoint, body, headers, concurrency, timeout):
+def request_specs(protocol, endpoints, model, prompt, max_tokens, api_key, concurrency):
+    protocols = ("openai", "anthropic") if protocol == "mixed" else (protocol,)
+    counts = {name: 0 for name in protocols}
+    if protocol == "mixed":
+        counts["openai"] = (concurrency + 1) // 2
+        counts["anthropic"] = concurrency // 2
+    else:
+        counts[protocol] = concurrency
+
+    specs = []
+    for name in protocols:
+        body = request_body(name, model, prompt, max_tokens)
+        headers = request_headers(name, api_key, body)
+        specs.extend(
+            {
+                "body": body,
+                "endpoint": endpoints[name],
+                "headers": headers,
+                "protocol": name,
+            }
+            for _ in range(counts[name])
+        )
+    return specs
+
+
+def run_concurrency(specs, timeout):
+    concurrency = len(specs)
     barrier = threading.Barrier(concurrency)
     started = time.monotonic()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
-        results = list(
-            executor.map(
-                lambda _: first_content_token(endpoint, body, headers, barrier, timeout),
-                range(concurrency),
-            )
+
+    def run_request(spec):
+        result = first_content_token(
+            spec["endpoint"], spec["body"], spec["headers"], barrier, timeout
         )
+        result["protocol"] = spec["protocol"]
+        return result
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+        results = list(executor.map(run_request, specs))
     successes = [result for result in results if result["ok"]]
     failures = [result for result in results if not result["ok"]]
     ttft = [result["ttft_s"] for result in successes]
     ttfb = [result["ttfb_s"] for result in successes]
+    protocols = {}
+    for name in sorted({result["protocol"] for result in results}):
+        protocol_results = [result for result in results if result["protocol"] == name]
+        protocols[name] = {
+            "requests": len(protocol_results),
+            "successes": sum(result["ok"] for result in protocol_results),
+            "failures": sum(not result["ok"] for result in protocol_results),
+        }
     return {
         "concurrency": concurrency,
         "requests": concurrency,
         "successes": len(successes),
         "failures": len(failures),
         "elapsed_s": time.monotonic() - started,
-        "input_body_bytes": len(body),
+        "protocols": protocols,
+        "input_body_bytes": {
+            name: len(next(spec["body"] for spec in specs if spec["protocol"] == name))
+            for name in protocols
+        },
         "ttft_s": {key: percentile(ttft, value) for key, value in (("p50", 50), ("p95", 95), ("p99", 99))},
         "ttfb_s": {key: percentile(ttfb, value) for key, value in (("p50", 50), ("p95", 95), ("p99", 99))},
-        "errors": dict(Counter(result["error"] for result in failures)),
+        "errors": dict(Counter(f"{result['protocol']}: {result['error']}" for result in failures)),
     }
 
 
@@ -182,13 +223,26 @@ def self_test():
     anthropic_body = json.loads(request_body("anthropic", "model", "hello", 16))
     assert "topK" not in anthropic_body
     assert request_headers("anthropic", "key", b"{}")["x-api-key"] == "key"
+    specs = request_specs(
+        "mixed",
+        {"openai": Endpoint("http://example.test/openai"), "anthropic": Endpoint("http://example.test/anthropic")},
+        "model",
+        "hello",
+        16,
+        "key",
+        5,
+    )
+    assert [spec["protocol"] for spec in specs].count("openai") == 3
+    assert [spec["protocol"] for spec in specs].count("anthropic") == 2
     print("self-test passed")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--endpoint", required=False, help="Full Higress OpenAI or Anthropic endpoint URL")
-    parser.add_argument("--protocol", choices=("openai", "anthropic"), default="openai")
+    parser.add_argument("--endpoint", help="Full Higress endpoint URL for a single protocol")
+    parser.add_argument("--openai-endpoint", help="OpenAI endpoint URL for --protocol mixed")
+    parser.add_argument("--anthropic-endpoint", help="Anthropic endpoint URL for --protocol mixed")
+    parser.add_argument("--protocol", choices=("openai", "anthropic", "mixed"), default="openai")
     parser.add_argument("--api-key-env", default="HIGRESS_API_KEY", help="Environment variable containing the API key")
     parser.add_argument("--model", required=False, help="Model name sent to Higress")
     parser.add_argument("--prompt", default="仅回复OK", help="Short prompt when --prompt-tokens is unset")
@@ -202,41 +256,46 @@ def main():
     if args.self_test:
         self_test()
         return
-    if not args.endpoint or not args.model:
-        parser.error("--endpoint and --model are required")
+    if not args.model:
+        parser.error("--model is required")
+    if args.protocol == "mixed":
+        if not args.openai_endpoint or not args.anthropic_endpoint:
+            parser.error("--openai-endpoint and --anthropic-endpoint are required for --protocol mixed")
+        endpoints = {
+            "openai": Endpoint(args.openai_endpoint),
+            "anthropic": Endpoint(args.anthropic_endpoint),
+        }
+    elif not args.endpoint:
+        parser.error("--endpoint is required for a single protocol")
+    else:
+        endpoints = {args.protocol: Endpoint(args.endpoint)}
     if args.max_tokens < 1:
         parser.error("--max-tokens must be positive")
     api_key = os.getenv(args.api_key_env)
     if not api_key:
         parser.error(f"environment variable {args.api_key_env} is required")
 
-    endpoint = Endpoint(args.endpoint)
     prompt = prompt_for_args(args)
-    body = request_body(args.protocol, args.model, prompt, args.max_tokens)
     output_dir = Path(args.output_dir or "artifacts/higress-ttft/" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "run.properties").write_text(
         "\n".join(
             (
-                f"endpoint={args.endpoint}",
                 f"protocol={args.protocol}",
                 f"model={args.model}",
                 f"prompt_tokens={args.prompt_tokens if args.prompt_tokens is not None else 'short'}",
                 f"max_tokens={args.max_tokens}",
                 "concurrencies=" + ",".join(str(value) for value in args.concurrency),
+                f"openai_endpoint={args.openai_endpoint or args.endpoint}",
+                f"anthropic_endpoint={args.anthropic_endpoint or args.endpoint}",
             )
         ) + "\n",
         encoding="utf-8",
     )
     summaries = []
     for concurrency in args.concurrency:
-        summary = run_concurrency(
-            endpoint,
-            body,
-            request_headers(args.protocol, api_key, body),
-            concurrency,
-            args.timeout,
-        )
+        specs = request_specs(args.protocol, endpoints, args.model, prompt, args.max_tokens, api_key, concurrency)
+        summary = run_concurrency(specs, args.timeout)
         (output_dir / f"ttft-{concurrency}-summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(json.dumps(summary, ensure_ascii=False), flush=True)
         summaries.append(summary)

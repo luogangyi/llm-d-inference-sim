@@ -94,6 +94,25 @@ class EndToEndTest(unittest.TestCase):
                 self.assertEqual(result["successes"], 3)
                 self.assertEqual(result["failures"], 0)
                 self.assertIsNotNone(result["ttft_s"]["p50"])
+            mixed_dir = Path(output_dir) / "mixed"
+            command = [
+                sys.executable, str(SCRIPT),
+                "--protocol", "mixed",
+                "--openai-endpoint", f"http://127.0.0.1:{server.server_port}/v1/chat/completions?mode=stream",
+                "--anthropic-endpoint", f"http://127.0.0.1:{server.server_port}/v1/messages",
+                "--api-key-env", "TEST_HIGRESS_KEY",
+                "--model", "test-model",
+                "--prompt", "tiny",
+                "--max-tokens", "16",
+                "--concurrency", "4",
+                "--output-dir", str(mixed_dir),
+            ]
+            completed = subprocess.run(command, env=environment, capture_output=True, text=True, check=False)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads((mixed_dir / "ttft-summary.json").read_text())["summaries"][0]
+            self.assertEqual(result["protocols"]["openai"]["requests"], 2)
+            self.assertEqual(result["protocols"]["anthropic"]["requests"], 2)
+            self.assertEqual(result["successes"], 4)
 
 
 if __name__ == "__main__":
