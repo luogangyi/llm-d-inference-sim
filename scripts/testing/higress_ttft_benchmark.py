@@ -38,7 +38,19 @@ def parse_concurrencies(value):
     return concurrencies
 
 
-def request_body(model, prompt, max_tokens):
+def request_body(protocol, model, prompt, max_tokens):
+    if protocol == "anthropic":
+        return json.dumps(
+            {
+                "max_tokens": max_tokens,
+                "model": model,
+                "stream": True,
+                "temperature": 1,
+                "top_k": 5,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
     return json.dumps(
         {
             "max_tokens": max_tokens,
@@ -51,6 +63,19 @@ def request_body(model, prompt, max_tokens):
         },
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+def request_headers(protocol, api_key, body):
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+        "Content-Length": str(len(body)),
+    }
+    if protocol == "anthropic":
+        headers.update({"x-api-key": api_key, "anthropic-version": "2023-06-01"})
+    else:
+        headers["Authorization"] = "Bearer " + api_key
+    return headers
 
 
 def prompt_for_args(args):
@@ -107,10 +132,12 @@ def first_content_token(endpoint, body, headers, barrier, timeout):
                 payload = json.loads(event)
             except json.JSONDecodeError:
                 continue
-            if any(
+            openai_content = any(
                 choice.get("delta", {}).get("content") or choice.get("text")
                 for choice in payload.get("choices", [])
-            ):
+            )
+            anthropic_content = payload.get("delta", {}).get("text")
+            if openai_content or anthropic_content:
                 ttft = time.monotonic() - started
                 connection.close()
                 return {"ok": True, "ttfb_s": ttfb, "ttft_s": ttft}
@@ -149,16 +176,20 @@ def self_test():
     assert parse_concurrencies("1,100,500") == (1, 100, 500)
     assert percentile([1, 2, 3, 4], 50) == 2.5
     assert percentile([], 95) is None
-    body = json.loads(request_body("model", "hello", 16))
+    body = json.loads(request_body("openai", "model", "hello", 16))
     assert body["stream"] is True
     assert body["messages"] == [{"role": "user", "content": "hello"}]
+    anthropic_body = json.loads(request_body("anthropic", "model", "hello", 16))
+    assert "topK" not in anthropic_body
+    assert request_headers("anthropic", "key", b"{}")["x-api-key"] == "key"
     print("self-test passed")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--endpoint", required=False, help="Full Higress chat-completions URL")
-    parser.add_argument("--api-key-env", default="HIGRESS_API_KEY", help="Environment variable containing the bearer token")
+    parser.add_argument("--endpoint", required=False, help="Full Higress OpenAI or Anthropic endpoint URL")
+    parser.add_argument("--protocol", choices=("openai", "anthropic"), default="openai")
+    parser.add_argument("--api-key-env", default="HIGRESS_API_KEY", help="Environment variable containing the API key")
     parser.add_argument("--model", required=False, help="Model name sent to Higress")
     parser.add_argument("--prompt", default="仅回复OK", help="Short prompt when --prompt-tokens is unset")
     parser.add_argument("--prompt-tokens", type=int, help="Generate this many input tokens using the calibrated a-space pattern")
@@ -181,13 +212,14 @@ def main():
 
     endpoint = Endpoint(args.endpoint)
     prompt = prompt_for_args(args)
-    body = request_body(args.model, prompt, args.max_tokens)
+    body = request_body(args.protocol, args.model, prompt, args.max_tokens)
     output_dir = Path(args.output_dir or "artifacts/higress-ttft/" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "run.properties").write_text(
         "\n".join(
             (
                 f"endpoint={args.endpoint}",
+                f"protocol={args.protocol}",
                 f"model={args.model}",
                 f"prompt_tokens={args.prompt_tokens if args.prompt_tokens is not None else 'short'}",
                 f"max_tokens={args.max_tokens}",
@@ -198,7 +230,13 @@ def main():
     )
     summaries = []
     for concurrency in args.concurrency:
-        summary = run_concurrency(endpoint, body, {"Authorization": "Bearer " + api_key, "Content-Type": "application/json", "Accept": "text/event-stream", "Content-Length": str(len(body))}, concurrency, args.timeout)
+        summary = run_concurrency(
+            endpoint,
+            body,
+            request_headers(args.protocol, api_key, body),
+            concurrency,
+            args.timeout,
+        )
         (output_dir / f"ttft-{concurrency}-summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(json.dumps(summary, ensure_ascii=False), flush=True)
         summaries.append(summary)

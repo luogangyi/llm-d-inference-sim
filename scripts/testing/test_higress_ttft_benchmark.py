@@ -32,10 +32,17 @@ class UnitTests(unittest.TestCase):
 
 class MockHigressHandler(BaseHTTPRequestHandler):
     def do_POST(self):
-        if self.path != "/v1/chat/completions?mode=stream":
+        if self.path not in ("/v1/chat/completions?mode=stream", "/v1/messages"):
             self.send_error(404)
             return
-        if self.headers.get("Authorization") != "Bearer test-key":
+        anthropic = self.path == "/v1/messages"
+        if anthropic and self.headers.get("x-api-key") != "test-key":
+            self.send_error(401)
+            return
+        if anthropic and self.headers.get("anthropic-version") != "2023-06-01":
+            self.send_error(400)
+            return
+        if not anthropic and self.headers.get("Authorization") != "Bearer test-key":
             self.send_error(401)
             return
         length = int(self.headers["Content-Length"])
@@ -46,8 +53,12 @@ class MockHigressHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
-        self.wfile.write(b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n')
-        self.wfile.write(b'data: {"choices":[{"delta":{"content":"OK"}}]}\n\n')
+        if anthropic:
+            self.wfile.write(b'event: content_block_delta\n')
+            self.wfile.write(b'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"OK"}}\n\n')
+        else:
+            self.wfile.write(b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n')
+            self.wfile.write(b'data: {"choices":[{"delta":{"content":"OK"}}]}\n\n')
         self.wfile.flush()
 
     def log_message(self, _format, *_args):
@@ -55,7 +66,7 @@ class MockHigressHandler(BaseHTTPRequestHandler):
 
 
 class EndToEndTest(unittest.TestCase):
-    def test_collects_first_content_token(self):
+    def test_collects_first_content_token_for_both_protocols(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), MockHigressHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -63,23 +74,26 @@ class EndToEndTest(unittest.TestCase):
         self.addCleanup(server.server_close)
         with tempfile.TemporaryDirectory() as output_dir:
             environment = os.environ | {"TEST_HIGRESS_KEY": "test-key"}
-            command = [
-                sys.executable, str(SCRIPT),
-                "--endpoint", f"http://127.0.0.1:{server.server_port}/v1/chat/completions?mode=stream",
-                "--api-key-env", "TEST_HIGRESS_KEY",
-                "--model", "test-model",
-                "--prompt", "tiny",
-                "--max-tokens", "16",
-                "--concurrency", "3",
-                "--output-dir", output_dir,
-            ]
-            completed = subprocess.run(command, env=environment, capture_output=True, text=True, check=False)
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            summary = json.loads((Path(output_dir) / "ttft-summary.json").read_text())
-            result = summary["summaries"][0]
-            self.assertEqual(result["successes"], 3)
-            self.assertEqual(result["failures"], 0)
-            self.assertIsNotNone(result["ttft_s"]["p50"])
+            for protocol, path in (("openai", "/v1/chat/completions?mode=stream"), ("anthropic", "/v1/messages")):
+                protocol_dir = Path(output_dir) / protocol
+                command = [
+                    sys.executable, str(SCRIPT),
+                    "--endpoint", f"http://127.0.0.1:{server.server_port}{path}",
+                    "--protocol", protocol,
+                    "--api-key-env", "TEST_HIGRESS_KEY",
+                    "--model", "test-model",
+                    "--prompt", "tiny",
+                    "--max-tokens", "16",
+                    "--concurrency", "3",
+                    "--output-dir", str(protocol_dir),
+                ]
+                completed = subprocess.run(command, env=environment, capture_output=True, text=True, check=False)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                summary = json.loads((protocol_dir / "ttft-summary.json").read_text())
+                result = summary["summaries"][0]
+                self.assertEqual(result["successes"], 3)
+                self.assertEqual(result["failures"], 0)
+                self.assertIsNotNone(result["ttft_s"]["p50"])
 
 
 if __name__ == "__main__":
