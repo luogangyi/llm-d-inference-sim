@@ -180,6 +180,47 @@ traffic-simulation:
 
 现有 `X-Mock-Cached-Tokens` 仅在 `enable-test-controls=true` 时有效，优先级最高；它覆盖 usage 和 TTFT 的 cached token 数，但不读取、写入或污染 prompt cache。`X-Mock-Prompt-Tokens` 没有真实 token 序列时同样旁路 prompt cache。这样固定 token 压测保持可重复。
 
+### 6.1 容量规划
+
+缓存容量取决于五分钟 TTL 内保留的不同前缀集合，不能只由并发数推导。对并发数 `C`、每个请求输入 `P`、平均请求生命周期 `T` 秒，五分钟内最多到达 `300 * C / T` 个请求。若每个请求均产生互不共享的、长度为 `H` 的可缓存前缀，TTL 工作集上界为：
+
+```text
+distinct_cached_tokens = H * 300 * C / T
+```
+
+80% 命中场景中 `H = 0.8 * P`。当命中来自一条所有请求共享的前缀时，工作集只有一条 80,000 token 或 8,000 token 前缀；当每个活跃会话有独立热点前缀时，应按活跃工作集规划。
+
+| 负载 | 活跃输入 token | 80% 热前缀工作集 | block-size=16 的活跃 block 数 |
+| --- | ---: | ---: | ---: |
+| 100 并发，100,000 token | 10,000,000 | 8,000,000 | 625,000 |
+| 1,000 并发，10,000 token | 10,000,000 | 8,000,000 | 625,000 |
+
+对有会话复用且缓存集合不随五分钟累计增长的两类负载，`logical-prefix` 推荐从以下配置开始：
+
+```yaml
+traffic-simulation:
+  prompt-cache:
+    source: logical-prefix
+    ttl: 5m
+    max-total-tokens: 10000000 # 8,000,000 token 工作集加 25% 裕量
+    max-entries: 10000
+```
+
+token ID 按 `uint32` 存储时，1,000 万 token 的原始数据约 38 MiB。radix 索引、namespace、LRU 元数据、Go map 和并发请求的 tokenization buffer 会明显增加占用，以上配置应为 simulator Pod 设置 `requests.memory: 1Gi`、`limits.memory: 2Gi`。此缓存为内存态，重启可重建，不需要持久卷；日志、指标和数据集若需保留，应与缓存容量分开配置。
+
+`kv-block` 是协议和 ZMQ 生命周期模拟，不适合用作该工作负载的五分钟逻辑缓存。当前实现会为每个完整输入 block 建立记录，因此仅容纳两种负载的 1,000 万并发输入就需要至少 625,000 blocks；为避免瞬时容量错误应使用 800,000 blocks：
+
+```yaml
+kvcache:
+  enable-kvcache: true
+  kv-cache-size: 800000
+  block-size: 16
+```
+
+该模式除了约 49 MiB 的 token 数组外，还维护 block map、in-flight request map，并分配 `10 * kv-cache-size` 个 `EventData` 的事件 channel。800,000 blocks 时该 channel 的 backing array 约为 610 MiB，因此应至少设置 `requests.memory: 2Gi`、`limits.memory: 4Gi`。如果不同前缀在整个五分钟都累积，必须先按上式计算 token 数；例如平均请求生命周期为 5 秒时，两种负载都会形成约 4.8 亿 cacheable token。对应的 3,000 万 blocks 会使当前事件 channel 单独占用约 23 GiB，不能通过单纯提高 `kv-cache-size` 支持。
+
+因此，压测目标是向 OpenAI 或 Anthropic 客户端返回缓存命中数时，使用 `logical-prefix`；只有需要向 llm-d 路由器发布 vLLM KV block 生命周期事件时才启用 `kv-block`。需要同时验证两者时，逻辑缓存保存 usage 命中结果，KV block 缓存限定为较小的事件模拟容量，并由统一 resolver 防止重复计数。
+
 ## 7. 时延、指标和管理面
 
 TTFT 的 token-aware 分支使用 `uncached = P-H`，即：
