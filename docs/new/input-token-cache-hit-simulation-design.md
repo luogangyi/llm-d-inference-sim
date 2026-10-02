@@ -96,17 +96,17 @@ vLLM gRPC 的 `GenerateStreamChunk.cached_tokens` 和 `GenerateComplete.cached_t
 
 只比较 `api.Request.TokenizedPrompt().Tokens`。不得比较原始 HTTP body、字符串、JSON 序列化结果或 prompt hash，因为它们会忽略 chat template、role、tool schema、LoRA、tokenizer 和多模态占位符的差异。
 
-在 `baseRequestContext.tokenize()` 成功后、上下文窗口校验通过后执行 lookup。以下命名空间字段共同隔离缓存：
+在 `baseRequestContext.tokenize()` 成功后、上下文窗口校验通过后执行 lookup。以下字段隔离缓存：
 
 ```text
-engine + displayed_model + lora_id + tokenizer_fingerprint + chat_template_fingerprint
-  + multimodal_fingerprint + cache_epoch
+engine + base_model + displayed_model + lora_name + lora_id + render_url
+  + force_dummy_tokenizer
 ```
 
 - `displayed_model` 与 LoRA 防止不同模型错误共享。
-- tokenizer 和 template 指纹随 render URL、模型或模板变更而变。
-- 多模态指纹覆盖 `MMFeatures` 的 hash 与 placeholder 布局。
-- cache epoch 在 sleep/discard、模型重载、配置中声明的清理操作后递增。
+- 模型、render URL 和 dummy tokenizer 选项区分不同 tokenization 路径。若同一 render URL 后的 tokenizer/template 被热替换，调用清理接口。
+- 含有 `MMFeatures` 的多模态请求旁路逻辑缓存，避免不同图像或音频使用相同文本 token 占位符时错误命中。
+- cache epoch 在 sleep、配置变更和清理操作后递增；逻辑缓存指针在配置变更时替换。
 
 请求 ID、用户、认证头、完整 prompt 和任意客户端 header 不进入 namespace 或 Prometheus 标签。
 
@@ -114,7 +114,7 @@ engine + displayed_model + lora_id + tokenizer_fingerprint + chat_template_finge
 
 `logical-prefix` 使用按 namespace 划分的 token radix trie。每个节点保存 token id、子节点、最近访问时间、可缓存终点和子树 token 数。lookup 从根逐 token 前进，直到没有子节点，返回已匹配 token 长度 `H`。插入完整 prompt token 序列后，后续较长 prompt 可以命中已有短前缀，后续短 prompt 也可以命中已有长 prompt 的前缀。
 
-查找和插入在单个 namespace 的互斥锁中完成；热点 namespace 可使用分片锁。不得以全局锁串行化所有模型的请求。`max_entries`、`max_total_tokens` 和 TTL 触发 LRU 驱逐；驱逐仅影响未来 lookup，绝不修改已经建立的 response usage。
+查找和插入在缓存互斥锁中完成。`max_entries`、`max_total_tokens` 和 TTL 触发 LRU 驱逐；驱逐仅影响未来 lookup，绝不修改已经建立的 response usage。压测用例覆盖 100 并发 x 100K 和 1000 并发 x 10K 的活跃工作集；若实测锁竞争成为瓶颈，再按 namespace 分片。
 
 ### 4.3 KV block 模式
 
@@ -129,19 +129,17 @@ engine + displayed_model + lora_id + tokenizer_fingerprint + chat_template_finge
 | `disabled` | `H=0`，不读取或写入逻辑缓存。 |
 | `logical-prefix` | 使用 radix trie，允许精确 token 命中。 |
 | `kv-block` | 使用当前 KV block cache，要求 `enable-kvcache=true`。 |
-| `auto` | KV cache 开启时使用 `kv-block`，否则使用 `logical-prefix`。 |
+| `auto` | KV cache 开启时使用 `kv-block`，否则关闭缓存。 |
 
-不得将 logical 和 block 的命中数相加。`auto` 的默认行为使现有 KV event 部署保持物理 block 语义，而 CPU-only 流量模拟可无需 render sidecar 使用精确逻辑命中。
+不得将 logical 和 block 的命中数相加。`auto` 保持现有部署行为；需要 CPU-only 精确逻辑命中时显式配置 `source: logical-prefix`。
 
 ## 5. 生命周期和并发语义
 
 ### 5.1 可见性
 
-默认 `visibility: accepted`：请求完成 tokenization、校验和准入后立即将 token 序列写入缓存。这样后续排队请求可以命中已被调度器接受的 prefix，接近真实引擎已分配 KV 的语义。
+请求完成 tokenization 和上下文窗口校验后立即将 token 序列写入缓存。后续请求可命中已被工作线程接受的 prefix。被 4xx/5xx 拒绝、在入队前取消或未通过 tokenization 的请求不会插入。已开始处理的请求即使客户端中途关闭，缓存仍保留到 TTL 或驱逐。
 
-可选 `visibility: completed` 在成功生成最后 response 后才提交插入，用于验证“只命中已完成请求”的网关策略。被 4xx/5xx 拒绝、在入队前取消或未通过 tokenization 的请求永不插入。客户端中途关闭是否保留已创建 cache entry 由 `cache-on-client-cancel` 控制，默认保留 accepted entry，与已开始 prefill 的语义一致。
-
-每个请求在 `RequestContext` 中冻结 `CacheResolution{source, namespace, prompt_tokens, hit_tokens, write_tokens, epoch}`。Scenario 更新、TTL 驱逐或 cache clear 不会修改在途请求的 usage、TTFT 或指标标签。
+每个请求在处理时将命中数写入请求对象，再构造 response usage。Scenario 更新、TTL 驱逐或 cache clear 不会修改已构造的 response usage 和 TTFT。
 
 ### 5.2 处理顺序
 
@@ -152,12 +150,12 @@ HTTP request
   -> resolve cached prefix H
   -> construct immutable request context and usage
   -> admit/queue request
-  -> insert now (accepted) or stage insertion (completed)
+  -> insert on acceptance
   -> simulate TTFT using P-H
   -> encode protocol-specific usage
 ```
 
-现有 `KVCacheOnRequestStart`、`SetNumberOfCachedPromptTokens` 和 `simulateTTFT` 是接入点。实现时将 `KVCacheOnRequestStart` 抽象为 `ResolvePromptCache`，由它返回统一 `CacheResolution`；response context 只读取冻结的 `hit_tokens`，不自行调用 cache。
+现有 `KVCacheOnRequestStart`、`SetNumberOfCachedPromptTokens` 和 `simulateTTFT` 是接入点。`KVCacheOnRequestStart` 按 source 解析命中；response context 只读取请求上冻结的 cached token 数，不自行调用 cache。
 
 ## 6. 配置和测试控制
 
@@ -167,16 +165,13 @@ HTTP request
 traffic-simulation:
   prompt-cache:
     source: auto                 # disabled, logical-prefix, kv-block, auto
-    visibility: accepted         # accepted, completed
     min-prefix-tokens: 1
     max-entries: 10000
     max-total-tokens: 1048576
     ttl: 5m
-    anthropic-accounting: mirror # disabled, mirror
-    cache-on-client-cancel: true
 ```
 
-默认 `source: disabled`，保证升级后原有行为不变。`max-*`、`ttl`、枚举和 `min-prefix-tokens` 都在 `Configuration.Validate` 中校验；运行时可安全更新的字段与 cache clear 操作使用 `/admin/config` 的 copy-validate-swap 模型。改变 source、namespace 构成字段、block size 或 tokenizer 必须递增 epoch 或清空相应 namespace，不能混用旧 entry。
+默认 `source: auto`，保证升级后原有行为不变。`max-*`、`ttl`、枚举和 `min-prefix-tokens` 在配置校验时检查；运行时可通过 `/admin/config` 更新并自动清空逻辑缓存。改变 tokenizer 或 chat template 时应调用 clear 接口，不能混用旧 entry。
 
 现有 `X-Mock-Cached-Tokens` 仅在 `enable-test-controls=true` 时有效，优先级最高；它覆盖 usage 和 TTFT 的 cached token 数，但不读取、写入或污染 prompt cache。`X-Mock-Prompt-Tokens` 没有真实 token 序列时同样旁路 prompt cache。这样固定 token 压测保持可重复。
 
@@ -260,7 +255,7 @@ stats 只返回 namespace 数、entry 数、token 数、命中率和 epoch，不
 | PC-UNIT-01 | 相同 token 两次请求 | 第一次 `H=0`，第二次 `H=P`。 |
 | PC-UNIT-02 | 共享前缀后缀不同 | 返回最长公共前缀，不匹配位置之后为 0。 |
 | PC-UNIT-03 | 模型、LoRA、tokenizer、模板或多模态变化 | 不跨 namespace 命中。 |
-| PC-UNIT-04 | `min-prefix-tokens` | 小于阈值不命中也不写入。 |
+| PC-UNIT-04 | `min-prefix-tokens` | 小于阈值报告 0 命中，请求仍记录以供后续命中。 |
 | PC-UNIT-05 | TTL、容量、clear、epoch | 被驱逐后为 miss；在途 `CacheResolution` 不变。 |
 | PC-UNIT-06 | 并发 lookup/insert | `go test -race` 无数据竞争；计数和 trie 不损坏。 |
 | PC-UNIT-07 | block 模式 | 只返回完整 block 数；不与 logical 数相加。 |

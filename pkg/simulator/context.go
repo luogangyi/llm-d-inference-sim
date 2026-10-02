@@ -18,8 +18,10 @@ package simulator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,6 +36,7 @@ import (
 	"github.com/llm-d/llm-d-inference-sim/pkg/endpoint"
 	"github.com/llm-d/llm-d-inference-sim/pkg/engine/vllm/fakemetrics"
 	"github.com/llm-d/llm-d-inference-sim/pkg/kvcache"
+	"github.com/llm-d/llm-d-inference-sim/pkg/promptcache"
 	"github.com/llm-d/llm-d-inference-sim/pkg/tokenizer"
 )
 
@@ -68,7 +71,9 @@ type SimContext struct {
 	// rand with a configurable seed to generate reproducible Random responses
 	Random *common.Random
 	// kv cache functionality
-	kvcacheHelper *kvcache.KVCacheHelper
+	kvcacheHelper    *kvcache.KVCacheHelper
+	promptCache      atomic.Pointer[promptcache.Cache]
+	promptCacheEpoch atomic.Uint64
 	// dataset is used for token generation in responses
 	dataset dataset.Dataset
 	// latencyCalculator calculates the delays in simulator's responses.
@@ -161,6 +166,9 @@ func (s *SimContext) ApplyConfigUpdate(body []byte) error {
 			return err
 		}
 	}
+	if next.TrafficSimulation.PromptCache.Source == common.PromptCacheKVBlock && !next.KVCache.EnableKVCache {
+		return errors.New("prompt-cache source kv-block requires enable-kvcache")
+	}
 	if update.FakeMetrics != nil {
 		// FakeMetrics is an engine-owned interface; only vLLM's concrete type
 		// is understood here. A future engine with a different concrete type
@@ -174,8 +182,24 @@ func (s *SimContext) ApplyConfigUpdate(body []byte) error {
 			}
 		}
 	}
+	if current.TrafficSimulation.PromptCache != next.TrafficSimulation.PromptCache {
+		old := s.promptCache.Load()
+		if old != nil && s.metrics.promptCacheEvictions != nil {
+			s.recordPromptCacheEvictions(current, common.PromptCacheLogicalPrefix, "epoch", old.Stats().Entries)
+			s.setPromptCacheEntries(current, common.PromptCacheLogicalPrefix, 0)
+		}
+		s.promptCache.Store(newPromptCache(next.TrafficSimulation.PromptCache))
+		s.promptCacheEpoch.Add(1)
+	}
 	s.SetConfig(next)
 	if current.TrafficSimulation != next.TrafficSimulation {
+		if current.TrafficSimulation.PromptCache == next.TrafficSimulation.PromptCache &&
+			(current.TrafficSimulation.Profile != next.TrafficSimulation.Profile ||
+				current.TrafficSimulation.Scenario != next.TrafficSimulation.Scenario) &&
+			s.metrics.promptCacheEntries != nil {
+			s.setPromptCacheEntries(current, common.PromptCacheLogicalPrefix, 0)
+			s.setPromptCacheEntries(next, common.PromptCacheLogicalPrefix, s.promptCache.Load().Stats().Entries)
+		}
 		s.setSimulationInfo(current, 0)
 		s.setSimulationInfo(next, 1)
 		s.logger.V(logging.INFO).Info("Traffic simulation configuration updated",
@@ -192,6 +216,10 @@ func (s *SimContext) ApplyConfigUpdate(body []byte) error {
 }
 
 func (s *SimContext) initialize(ctx context.Context) error {
+	if s.Config().TrafficSimulation.PromptCache.Source == common.PromptCacheKVBlock && !s.Config().KVCache.EnableKVCache {
+		return errors.New("prompt-cache source kv-block requires enable-kvcache")
+	}
+	s.promptCache.Store(newPromptCache(s.Config().TrafficSimulation.PromptCache))
 	s.Random = common.NewRandom(s.Config().Seed, s.Config().Port)
 
 	s.rebuildLatencyCalculator()
@@ -323,6 +351,7 @@ func (s *SimContext) Sleep() bool {
 	if cfg.KVCache.EnableKVCache {
 		s.kvcacheHelper.Discard()
 	}
+	_ = s.ClearPromptCache("")
 	return true
 }
 
@@ -394,22 +423,117 @@ func (s *SimContext) GetResponseTokens(req api.Request) (*api.Tokenized, string,
 	return s.dataset.GetResponseTokens(req)
 }
 
-// KVCacheOnRequestStart records req's arrival in the KV cache, if enabled.
+func newPromptCache(cfg common.PromptCacheConfig) *promptcache.Cache {
+	return promptcache.New(promptcache.Options{
+		MaxEntries: cfg.MaxEntries, MaxTotalTokens: cfg.MaxTotalTokens,
+		MinPrefixTokens: cfg.MinPrefixTokens, TTL: cfg.TTL,
+	})
+}
+
+// KVCacheOnRequestStart resolves the configured source of prompt cache hits.
 func (s *SimContext) KVCacheOnRequestStart(req api.Request) (kvcache.PrefixCacheStats, *api.Error) {
-	if !s.Config().KVCache.EnableKVCache {
+	cfg := s.Config()
+	overrides := req.GetSimulationOverrides()
+	if overrides.PromptTokens != nil || overrides.CachedPromptTokens != nil {
+		stat := kvcache.PrefixCacheStats{QueriedTokens: api.EffectivePromptTokens(req)}
+		if overrides.CachedPromptTokens != nil {
+			stat.CachedTokens = *overrides.CachedPromptTokens
+		}
+		return stat, nil
+	}
+	source := cfg.TrafficSimulation.PromptCache.Source
+	if source == common.PromptCacheAuto {
+		if cfg.KVCache.EnableKVCache {
+			source = common.PromptCacheKVBlock
+		} else {
+			source = common.PromptCacheDisabled
+		}
+	}
+	if source == common.PromptCacheLogicalPrefix {
+		if req.MMFeatures() != nil {
+			return kvcache.PrefixCacheStats{}, nil
+		}
+		tokens := req.TokenizedPrompt().Tokens
+		lora := ""
+		if name := req.GetLoraName(); name != nil {
+			lora = *name
+		}
+		loraID := 0
+		if id := req.GetLoraID(); id != nil {
+			loraID = *id
+		}
+		namespace := fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%d\x00%s\x00%t", cfg.EngineName, cfg.Model,
+			req.GetDisplayedModel(), lora, loraID, cfg.RenderURL, cfg.ForceDummyTokenizer)
+		resolution := s.promptCache.Load().Resolve(namespace, tokens)
+		hit := resolution.HitTokens
+		req.SetNumberOfCachedPromptTokens(hit)
+		stat := kvcache.PrefixCacheStats{
+			QueriedTokens: len(tokens), CachedTokens: hit, CreatedTokens: resolution.WrittenTokens,
+		}
+		s.recordPromptCache(cfg, source, stat, resolution)
+		return stat, nil
+	}
+	if source == common.PromptCacheDisabled {
+		s.recordPromptCache(cfg, source, kvcache.PrefixCacheStats{QueriedTokens: api.EffectivePromptTokens(req)}, promptcache.Resolution{})
 		return kvcache.PrefixCacheStats{}, nil
+	}
+	if !cfg.KVCache.EnableKVCache || s.kvcacheHelper == nil {
+		serverError := api.NewError("prompt-cache source kv-block requires enable-kvcache", fasthttp.StatusInternalServerError, nil)
+		return kvcache.PrefixCacheStats{}, &serverError
 	}
 	stat, err := s.kvcacheHelper.OnRequestStart(req)
 	if err != nil {
 		serverError := api.NewError(err.Error(), fasthttp.StatusInternalServerError, nil)
 		return kvcache.PrefixCacheStats{}, &serverError
 	}
+	s.recordPromptCache(cfg, source, stat, promptcache.Resolution{})
 	return stat, nil
+}
+
+func (s *SimContext) PromptCacheStats() promptcache.Snapshot {
+	stats := s.promptCache.Load().Stats()
+	snapshot := promptcache.Snapshot{Statistics: stats, Source: s.Config().TrafficSimulation.PromptCache.Source,
+		Epoch: s.promptCacheEpoch.Load()}
+	if stats.QueriedTokens > 0 {
+		snapshot.HitRate = float64(stats.HitTokens) / float64(stats.QueriedTokens)
+	}
+	return snapshot
+}
+
+func (s *SimContext) ClearPromptCache(model string) error {
+	cache := s.promptCache.Load()
+	if cache == nil {
+		return nil
+	}
+	removed := 0
+	if model == "" {
+		removed = cache.Clear()
+	} else {
+		known := s.isLora(model)
+		canonicalModel := model
+		for _, alias := range s.Config().ServedModelNames {
+			if alias == model {
+				known = true
+				canonicalModel = s.Config().ServedModelNames[0]
+			}
+		}
+		if !known {
+			return fmt.Errorf("unknown model alias %q", model)
+		}
+		removed = cache.ClearMatching(func(namespace string) bool {
+			parts := strings.Split(namespace, "\x00")
+			return len(parts) >= 3 && parts[2] == canonicalModel
+		})
+	}
+	s.promptCacheEpoch.Add(1)
+	s.recordPromptCacheEvictions(s.Config(), common.PromptCacheLogicalPrefix, "clear", removed)
+	s.setPromptCacheEntries(s.Config(), common.PromptCacheLogicalPrefix, cache.Stats().Entries)
+	return nil
 }
 
 // KVCacheOnRequestEnd records the request's completion in the KV cache, if enabled.
 func (s *SimContext) KVCacheOnRequestEnd(requestID string) {
-	if !s.Config().KVCache.EnableKVCache {
+	if s.kvcacheHelper == nil {
 		return
 	}
 	if err := s.kvcacheHelper.OnRequestEnd(requestID); err != nil {

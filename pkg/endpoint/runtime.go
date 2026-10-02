@@ -22,6 +22,7 @@ import (
 	"github.com/llm-d/llm-d-inference-sim/pkg/api"
 	"github.com/llm-d/llm-d-inference-sim/pkg/common"
 	"github.com/llm-d/llm-d-inference-sim/pkg/kvcache"
+	"github.com/llm-d/llm-d-inference-sim/pkg/promptcache"
 	"github.com/llm-d/llm-d-inference-sim/pkg/tokenizer"
 )
 
@@ -49,6 +50,8 @@ type Runtime interface {
 	KVCacheOnRequestStart(req api.Request) (kvcache.PrefixCacheStats, *api.Error)
 	// KVCacheOnRequestEnd records the request's completion in the KV cache, if enabled.
 	KVCacheOnRequestEnd(requestID string)
+	PromptCacheStats() promptcache.Snapshot
+	ClearPromptCache(model string) error
 	// Sleep transitions the simulator into sleep mode. Returns whether it
 	// actually slept.
 	Sleep() bool

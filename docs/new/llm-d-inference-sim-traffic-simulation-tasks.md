@@ -12,6 +12,7 @@
 | M3 | SSE 流故障 | 已完成 | 本提交 | 流故障单元测试通过；5 个 HTTP e2e 规格通过；`make presubmit` 通过 |
 | M4 | SGLang 原生 engine | 已完成 | 本提交 | SGLang 请求和 SSE 单元测试通过；3 个 HTTP e2e 规格通过；`make presubmit` 通过 |
 | M5 | 指标、运行手册和压测复现 | 进行中 | 本提交 | 流故障指标单元测试通过；6 个 HTTP e2e 规格通过；`make presubmit` 通过 |
+| M6 | Input Token 前缀缓存模拟 | 已完成 | 本提交 | 缓存单元与竞态测试、7 个协议 e2e 规格、两类大上下文并发容量测试通过；项目级门禁限制见 [验证记录](testing/prompt-cache-validation.md) |
 
 ## M2 验收项
 
@@ -30,3 +31,4 @@
 | 2026-09-20 | M4 注册 SGLang engine，提供原生 `/generate`、模型查询和健康路由；原生流式响应使用累计文本，并保留 OpenAI 兼容路由。 |
 | 2026-09-20 | M5 开始实现流故障 Prometheus 计数器；标签使用请求开始时的 Profile 和 Scenario 快照。 |
 | 2026-09-22 | M5 增加 Higress 流式 TTFT 压测脚本。脚本通过环境变量读取鉴权密钥，记录每个并发档的 TTFB、TTFT 分位数和请求失败原因；本地 SSE 端到端测试及目标 Higress 实测完成。 |
+| 2026-10-03 | M6 实现可配置的逻辑前缀缓存、OpenAI/Anthropic/vLLM gRPC usage、统计和清理接口；操作说明见 [手册](prompt-cache-operations.md)。 |

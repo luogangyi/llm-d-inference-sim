@@ -23,6 +23,7 @@ import (
 	"github.com/llm-d/llm-d-inference-sim/pkg/api"
 	"github.com/llm-d/llm-d-inference-sim/pkg/common"
 	"github.com/llm-d/llm-d-inference-sim/pkg/kvcache"
+	"github.com/llm-d/llm-d-inference-sim/pkg/promptcache"
 	"github.com/llm-d/llm-d-inference-sim/pkg/tokenizer"
 )
 
@@ -48,6 +49,8 @@ func (f *fakeRuntime) KVCacheOnRequestStart(req api.Request) (kvcache.PrefixCach
 	return kvcache.PrefixCacheStats{}, nil
 }
 func (f *fakeRuntime) KVCacheOnRequestEnd(requestID string)            {}
+func (f *fakeRuntime) PromptCacheStats() promptcache.Snapshot          { return promptcache.Snapshot{} }
+func (f *fakeRuntime) ClearPromptCache(string) error                   { return nil }
 func (f *fakeRuntime) Sleep() bool                                     { return false }
 func (f *fakeRuntime) WakeUp(activateKVCache bool)                     {}
 func (f *fakeRuntime) IsSleeping() bool                                { return false }

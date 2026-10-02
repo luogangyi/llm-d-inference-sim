@@ -89,6 +89,8 @@ func (c *Communication) startHTTPServer(ctx context.Context, listener net.Listen
 	r.POST("/tokenize", c.HandleTokenize)
 	r.GET("/admin/config", c.HandleGetAdminConfig)
 	r.POST("/admin/config", c.HandlePostAdminConfig)
+	r.GET("/admin/prompt-cache/stats", c.HandleGetPromptCacheStats)
+	r.POST("/admin/prompt-cache/clear", c.HandleClearPromptCache)
 
 	transport.BindHTTP(r, c)
 
@@ -1042,6 +1044,38 @@ func (c *Communication) HandlePostAdminConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	c.writeAdminConfigResponse(ctx)
+}
+
+func (c *Communication) HandleGetPromptCacheStats(ctx *fasthttp.RequestCtx) {
+	data, err := json.Marshal(c.runtime.PromptCacheStats())
+	if err != nil {
+		serverErr := api.NewError(err.Error(), fasthttp.StatusInternalServerError, nil)
+		c.sendError(ctx, &serverErr, false)
+		return
+	}
+	ctx.Response.Header.SetContentType("application/json")
+	ctx.Response.SetBody(data)
+}
+
+func (c *Communication) HandleClearPromptCache(ctx *fasthttp.RequestCtx) {
+	var request struct {
+		Model string `json:"model"`
+	}
+	if len(ctx.Request.Body()) > 0 {
+		decoder := json.NewDecoder(bytes.NewReader(ctx.Request.Body()))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil {
+			serverErr := api.NewError(err.Error(), fasthttp.StatusBadRequest, nil)
+			c.sendError(ctx, &serverErr, false)
+			return
+		}
+	}
+	if err := c.runtime.ClearPromptCache(request.Model); err != nil {
+		serverErr := api.NewError(err.Error(), fasthttp.StatusBadRequest, nil)
+		c.sendError(ctx, &serverErr, false)
+		return
+	}
+	c.HandleGetPromptCacheStats(ctx)
 }
 
 func (c *Communication) writeAdminConfigResponse(ctx *fasthttp.RequestCtx) {

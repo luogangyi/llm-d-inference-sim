@@ -57,7 +57,11 @@ const (
 	ConstantLatencyCalculator       = "constant"
 	PerPromptTokenLatencyCalculator = "per-token"
 
-	DefaultDSTableName = "llmd"
+	DefaultDSTableName       = "llmd"
+	PromptCacheAuto          = "auto"
+	PromptCacheDisabled      = "disabled"
+	PromptCacheLogicalPrefix = "logical-prefix"
+	PromptCacheKVBlock       = "kv-block"
 
 	// DefaultEngineName is the engine backend simulated when none is requested.
 	DefaultEngineName = "vllm"
@@ -457,6 +461,16 @@ type TrafficSimulationConfig struct {
 	EnableTestControls bool `yaml:"enable-test-controls" json:"enable-test-controls" admin:"configurable"`
 	// StreamFaults controls probabilistic faults for streaming responses.
 	StreamFaults StreamFaultsConfig `yaml:"stream-faults" json:"stream-faults"`
+	PromptCache  PromptCacheConfig  `yaml:"prompt-cache" json:"prompt-cache"`
+}
+
+// PromptCacheConfig controls token-prefix accounting for simulated requests.
+type PromptCacheConfig struct {
+	Source          string        `yaml:"source" json:"source" admin:"configurable"`
+	MaxEntries      int           `yaml:"max-entries" json:"max-entries" admin:"configurable"`
+	MaxTotalTokens  int           `yaml:"max-total-tokens" json:"max-total-tokens" admin:"configurable"`
+	MinPrefixTokens int           `yaml:"min-prefix-tokens" json:"min-prefix-tokens" admin:"configurable"`
+	TTL             time.Duration `yaml:"ttl" json:"ttl" admin:"configurable"`
 }
 
 // StreamFaultsConfig configures optional SSE transport faults. A rate of zero
@@ -487,6 +501,10 @@ func NewConfig() *Configuration {
 		Mode:                  ModeRandom,
 		Seed:                  time.Now().UnixNano(),
 		Latencies:             LatenciesConfig{TimeFactorUnderLoad: 1.0},
+		TrafficSimulation: TrafficSimulationConfig{PromptCache: PromptCacheConfig{
+			Source: PromptCacheAuto, MaxEntries: 10000, MaxTotalTokens: 1048576,
+			MinPrefixTokens: 1, TTL: 5 * time.Minute,
+		}},
 		ToolCalls: ToolCallConfig{
 			MaxToolCallIntegerParam:                   100,
 			MaxToolCallNumberParam:                    100,
@@ -709,6 +727,16 @@ func (c *Configuration) validate() error {
 	}
 
 	faults := c.TrafficSimulation.StreamFaults
+	cache := c.TrafficSimulation.PromptCache
+	switch cache.Source {
+	case PromptCacheAuto, PromptCacheDisabled, PromptCacheLogicalPrefix, PromptCacheKVBlock:
+	default:
+		return fmt.Errorf("traffic-simulation prompt-cache source %q is invalid", cache.Source)
+	}
+	if cache.MaxEntries < 1 || cache.MaxTotalTokens < 1 || cache.MinPrefixTokens < 1 ||
+		cache.MinPrefixTokens > cache.MaxTotalTokens || cache.TTL <= 0 {
+		return errors.New("traffic-simulation prompt-cache limits and ttl must be positive")
+	}
 	for name, rate := range map[string]int{
 		"disconnect-rate":    faults.DisconnectRate,
 		"stall-rate":         faults.StallRate,
@@ -829,6 +857,7 @@ func init() {
 	collectFieldMeta(reflect.TypeOf(LatenciesConfig{}))
 	collectFieldMeta(reflect.TypeOf(TrafficSimulationConfig{}))
 	collectFieldMeta(reflect.TypeOf(StreamFaultsConfig{}))
+	collectFieldMeta(reflect.TypeOf(PromptCacheConfig{}))
 
 	latenciesYAMLKeys = yamlKeysOf(reflect.TypeOf(LatenciesConfig{}))
 	latenciesYAMLKeySet = make(map[string]bool, len(latenciesYAMLKeys))
@@ -954,6 +983,22 @@ func unfoldNestedTrafficSimulation(raw map[string]json.RawMessage) error {
 		return fmt.Errorf(`field "traffic-simulation": %w`, err)
 	}
 	for key, value := range nested {
+		if key == "prompt-cache" {
+			var cache map[string]json.RawMessage
+			if err := json.Unmarshal(value, &cache); err != nil {
+				return fmt.Errorf(`field "traffic-simulation.prompt-cache": %w`, err)
+			}
+			for cacheKey, cacheValue := range cache {
+				if _, configurable := configurableFields[cacheKey]; !configurable {
+					return fmt.Errorf("field '%s' is not traffic-simulation.prompt-cache configurable", cacheKey)
+				}
+				if _, exists := raw[cacheKey]; exists {
+					return fmt.Errorf("traffic-simulation prompt-cache setting %s appears twice", cacheKey)
+				}
+				raw[cacheKey] = cacheValue
+			}
+			continue
+		}
 		if key == "stream-faults" {
 			var faults map[string]json.RawMessage
 			if err := json.Unmarshal(value, &faults); err != nil {
@@ -1009,6 +1054,20 @@ func foldFlatLatencies(raw map[string]json.RawMessage) error {
 
 func foldFlatTrafficSimulation(raw map[string]json.RawMessage) error {
 	nested := make(map[string]json.RawMessage)
+	cache := make(map[string]json.RawMessage)
+	for _, key := range []string{"source", "max-entries", "max-total-tokens", "min-prefix-tokens", "ttl"} {
+		if value, ok := raw[key]; ok {
+			cache[key] = value
+			delete(raw, key)
+		}
+	}
+	if len(cache) > 0 {
+		data, err := json.Marshal(cache)
+		if err != nil {
+			return fmt.Errorf("failed to marshal prompt-cache: %w", err)
+		}
+		nested["prompt-cache"] = data
+	}
 	for _, key := range []string{"scenario", "enable-test-controls"} {
 		if value, ok := raw[key]; ok {
 			nested[key] = value

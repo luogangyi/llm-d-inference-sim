@@ -123,13 +123,34 @@ func aggregateUsage(respCtxPerChoice []endpoint.ResponseContext) *api.Usage {
 		if !seenIDs[rc.RequestID()] {
 			seenIDs[rc.RequestID()] = true
 			agg.PromptTokens += u.PromptTokens
-			if u.PromptTokensDetails != nil && agg.PromptTokensDetails == nil {
-				agg.PromptTokensDetails = u.PromptTokensDetails
+			if u.PromptTokensDetails != nil {
+				if agg.PromptTokensDetails == nil {
+					agg.PromptTokensDetails = &api.PromptTokensDetails{}
+				}
+				agg.PromptTokensDetails.CachedTokens += u.PromptTokensDetails.CachedTokens
+				agg.PromptTokensDetails.CacheCreationTokens += u.PromptTokensDetails.CacheCreationTokens
 			}
 		}
 	}
 	agg.TotalTokens = agg.PromptTokens + agg.CompletionTokens
 	return agg
+}
+
+func responsesInputDetails(usage *api.Usage) *api.InputTokensDetails {
+	if usage.PromptTokensDetails == nil {
+		return &api.InputTokensDetails{}
+	}
+	return &api.InputTokensDetails{CachedTokens: usage.PromptTokensDetails.CachedTokens}
+}
+
+func messagesUsage(usage *api.Usage) api.MessagesUsage {
+	result := api.MessagesUsage{InputTokens: usage.PromptTokens, OutputTokens: usage.CompletionTokens}
+	if usage.PromptTokensDetails != nil {
+		result.CacheReadInputTokens = usage.PromptTokensDetails.CachedTokens
+		result.CacheCreationInputTokens = usage.PromptTokensDetails.CacheCreationTokens
+		result.InputTokens -= result.CacheReadInputTokens + result.CacheCreationInputTokens
+	}
+	return result
 }
 
 // baseRespBuilder provides default no-op and nil implementations for the
@@ -500,9 +521,10 @@ func (respBuilder *responsesHTTPRespBuilder) createResponse(respCtxPerChoice []e
 		respCtx.Instructions(),
 		output,
 		&api.ResponsesUsage{
-			InputTokens:  usage.PromptTokens,
-			OutputTokens: usage.CompletionTokens,
-			TotalTokens:  usage.TotalTokens,
+			InputTokens:        usage.PromptTokens,
+			InputTokensDetails: responsesInputDetails(usage),
+			OutputTokens:       usage.CompletionTokens,
+			TotalTokens:        usage.TotalTokens,
 		},
 	)
 }
@@ -549,9 +571,10 @@ func (respBuilder *responsesHTTPRespBuilder) createUsageChunk(respCtxPerChoice [
 		respCtx.Instructions(),
 		output,
 		&api.ResponsesUsage{
-			InputTokens:  usage.PromptTokens,
-			OutputTokens: usage.CompletionTokens,
-			TotalTokens:  usage.TotalTokens,
+			InputTokens:        usage.PromptTokens,
+			InputTokensDetails: responsesInputDetails(usage),
+			OutputTokens:       usage.CompletionTokens,
+			TotalTokens:        usage.TotalTokens,
 		},
 	)
 	return &namedEventChunk{
@@ -880,10 +903,7 @@ func (b *messagesHTTPRespBuilder) createResponse(respCtxPerChoice []endpoint.Res
 		respCtx.RequestID(),
 		b.stopReason(finishReason),
 		content,
-		api.MessagesUsage{
-			InputTokens:  usage.PromptTokens,
-			OutputTokens: usage.CompletionTokens,
-		},
+		messagesUsage(usage),
 	)
 }
 
@@ -895,7 +915,7 @@ func (b *messagesHTTPRespBuilder) createInitialChunk(respCtx endpoint.ResponseCo
 	msg := api.CreateMessagesStreamStartMessage(
 		respCtx.DisplayModel(),
 		respCtx.RequestID(),
-		respCtx.UsageData().PromptTokens,
+		messagesUsage(respCtx.UsageData()),
 	)
 	return &namedEventChunk{
 		names: []string{api.MessagesEventMessageStart},

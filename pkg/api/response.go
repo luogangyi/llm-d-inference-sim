@@ -89,7 +89,8 @@ type Usage struct {
 // PromptTokensDetails contains detailed token usage statistics for the prompt
 type PromptTokensDetails struct {
 	// CacheTokens is the number of tokens in the prompt that are in the local KV Cache
-	CachedTokens int `json:"cached_tokens"`
+	CachedTokens        int `json:"cached_tokens"`
+	CacheCreationTokens int `json:"-"`
 }
 
 // LogprobsContent represents logprobs for a single token in chat completions
@@ -608,9 +609,14 @@ func (c OutputContent) MarshalJSON() ([]byte, error) {
 }
 
 type ResponsesUsage struct {
-	InputTokens  int `json:"input_tokens,omitempty"`
-	OutputTokens int `json:"output_tokens,omitempty"`
-	TotalTokens  int `json:"total_tokens,omitempty"`
+	InputTokens        int                 `json:"input_tokens,omitempty"`
+	InputTokensDetails *InputTokensDetails `json:"input_tokens_details,omitempty"`
+	OutputTokens       int                 `json:"output_tokens,omitempty"`
+	TotalTokens        int                 `json:"total_tokens,omitempty"`
+}
+
+type InputTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
 }
 
 // Responses API streaming event types
@@ -762,7 +768,7 @@ func CreateMessagesResponse(model, requestID, stopReason string,
 
 // CreateMessagesStreamStartMessage builds the initial message object for the
 // message_start streaming event: empty content, nil stop_reason, input_tokens set.
-func CreateMessagesStreamStartMessage(model, requestID string, inputTokens int) *MessagesResponse {
+func CreateMessagesStreamStartMessage(model, requestID string, usage MessagesUsage) *MessagesResponse {
 	return &MessagesResponse{
 		ID:           MessagesIDPrefix + requestID,
 		Type:         MessagesType,
@@ -771,7 +777,7 @@ func CreateMessagesStreamStartMessage(model, requestID string, inputTokens int) 
 		Model:        model,
 		StopReason:   nil,
 		StopSequence: nil,
-		Usage:        MessagesUsage{InputTokens: inputTokens},
+		Usage:        usage,
 		RequestID:    requestID,
 	}
 }

@@ -103,6 +103,21 @@ var _ = Describe("ApplyAdminUpdate", func() {
 		Expect(base.TrafficSimulation.Scenario).To(Equal("default"))
 	})
 
+	It("updates and validates the nested prompt cache switch", func() {
+		next, _, _, err := base.Update([]byte(`{"traffic-simulation":{"prompt-cache":{"source":"logical-prefix","max-entries":20,"max-total-tokens":200,"ttl":"2m"}}}`))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(next.TrafficSimulation.PromptCache.Source).To(Equal(PromptCacheLogicalPrefix))
+		Expect(next.TrafficSimulation.PromptCache.MaxEntries).To(Equal(20))
+		Expect(next.TrafficSimulation.PromptCache.MaxTotalTokens).To(Equal(200))
+		Expect(next.TrafficSimulation.PromptCache.TTL).To(Equal(2 * time.Minute))
+		Expect(base.TrafficSimulation.PromptCache.Source).To(Equal(PromptCacheAuto))
+
+		_, _, _, err = base.Update([]byte(`{"traffic-simulation":{"prompt-cache":{"source":"unknown"}}}`))
+		Expect(err).To(HaveOccurred())
+		_, _, _, err = base.Update([]byte(`{"traffic-simulation":{"prompt-cache":{"source":"logical-prefix","max-total-tokens":0}}}`))
+		Expect(err).To(HaveOccurred())
+	})
+
 	It("updates nested stream faults without mutating the active configuration", func() {
 		next, _, _, err := base.Update([]byte(`{"traffic-simulation":{"stream-faults":{"disconnect-rate":100,"disconnect-after-chunks":2}}}`))
 		Expect(err).ToNot(HaveOccurred())
@@ -421,6 +436,7 @@ var _ = Describe("admin struct tags", func() {
 		checkTags(reflect.TypeOf(LatenciesConfig{}))
 		checkTags(reflect.TypeOf(TrafficSimulationConfig{}))
 		checkTags(reflect.TypeOf(StreamFaultsConfig{}))
+		checkTags(reflect.TypeOf(PromptCacheConfig{}))
 	})
 
 	It("configurableFields contains exactly the expected entries with their rebuild tags", func() {
@@ -454,6 +470,11 @@ var _ = Describe("admin struct tags", func() {
 			"omit-done-rate":                    "",
 			"omit-usage-rate":                   "",
 			"corrupt-usage-rate":                "",
+			"source":                            "",
+			"max-entries":                       "",
+			"max-total-tokens":                  "",
+			"min-prefix-tokens":                 "",
+			"ttl":                               "",
 		}))
 	})
 

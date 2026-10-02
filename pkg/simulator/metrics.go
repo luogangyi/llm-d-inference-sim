@@ -32,6 +32,7 @@ import (
 	"github.com/llm-d/llm-d-inference-sim/pkg/api"
 	"github.com/llm-d/llm-d-inference-sim/pkg/common"
 	"github.com/llm-d/llm-d-inference-sim/pkg/kvcache"
+	"github.com/llm-d/llm-d-inference-sim/pkg/promptcache"
 )
 
 const (
@@ -60,6 +61,10 @@ const (
 	PrefixCacheQueriesTotalMetricName = "vllm:prefix_cache_queries_total"
 	SimulationInfoMetricName          = "llmd_simulation_info"
 	StreamFaultsMetricName            = "llmd_simulation_stream_faults_total"
+	PromptCacheRequestsMetricName     = "llmd_prompt_cache_requests_total"
+	PromptCacheTokensMetricName       = "llmd_prompt_cache_tokens_total"
+	PromptCacheEntriesMetricName      = "llmd_prompt_cache_entries"
+	PromptCacheEvictionsMetricName    = "llmd_prompt_cache_evictions_total"
 )
 
 const (
@@ -123,7 +128,11 @@ type metricsData struct {
 	// simulationInfo identifies the configured engine, profile, and scenario.
 	simulationInfo *prometheus.GaugeVec
 	// streamFaults counts intentional stream faults by their simulation identity.
-	streamFaults *prometheus.CounterVec
+	streamFaults         *prometheus.CounterVec
+	promptCacheRequests  *prometheus.CounterVec
+	promptCacheTokens    *prometheus.CounterVec
+	promptCacheEntries   *prometheus.GaugeVec
+	promptCacheEvictions *prometheus.CounterVec
 	// loraInfo is prometheus gauge
 	loraInfo *prometheus.GaugeVec
 	// runningRequests is prometheus gauge
@@ -195,6 +204,9 @@ func (s *SimContext) createAndRegisterPrometheus(ctx context.Context) error {
 		return err
 	}
 	if err := s.createAndRegisterStreamFaultsMetric(); err != nil {
+		return err
+	}
+	if err := s.createAndRegisterPromptCacheMetrics(); err != nil {
 		return err
 	}
 
@@ -466,6 +478,68 @@ func (s *SimContext) createAndRegisterStreamFaultsMetric() error {
 // traffic simulation identity captured when the request began.
 func (s *SimContext) RecordStreamFault(profile, scenario, faultType string) {
 	s.metrics.streamFaults.WithLabelValues(profile, scenario, faultType).Inc()
+}
+
+func (s *SimContext) createAndRegisterPromptCacheMetrics() error {
+	labels := []string{"engine", "profile", "scenario", "source"}
+	s.metrics.promptCacheRequests = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: PromptCacheRequestsMetricName, Help: "Prompt cache requests by outcome.",
+	}, append(append([]string{}, labels...), "result"))
+	s.metrics.promptCacheTokens = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: PromptCacheTokensMetricName, Help: "Prompt cache token counts.",
+	}, append(append([]string{}, labels...), "kind"))
+	s.metrics.promptCacheEntries = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: PromptCacheEntriesMetricName, Help: "Resident logical prompt cache entries.",
+	}, labels)
+	s.metrics.promptCacheEvictions = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: PromptCacheEvictionsMetricName, Help: "Prompt cache evictions by reason.",
+	}, append(append([]string{}, labels...), "reason"))
+	for _, collector := range []prometheus.Collector{
+		s.metrics.promptCacheRequests, s.metrics.promptCacheTokens,
+		s.metrics.promptCacheEntries, s.metrics.promptCacheEvictions,
+	} {
+		if err := s.metrics.registry.Register(collector); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func promptCacheLabels(cfg *common.Configuration, source string) []string {
+	return []string{cfg.EngineName, cfg.TrafficSimulation.Profile, cfg.TrafficSimulation.Scenario, source}
+}
+
+func (s *SimContext) recordPromptCache(cfg *common.Configuration, source string,
+	stat kvcache.PrefixCacheStats, resolution promptcache.Resolution) {
+	labels := promptCacheLabels(cfg, source)
+	result := "miss"
+	if stat.CachedTokens >= stat.QueriedTokens && stat.QueriedTokens > 0 {
+		result = "hit"
+	} else if stat.CachedTokens > 0 {
+		result = "partial"
+	}
+	s.metrics.promptCacheRequests.WithLabelValues(append(labels, result)...).Inc()
+	for kind, count := range map[string]int{
+		"queried": stat.QueriedTokens, "hit": stat.CachedTokens, "written": stat.CreatedTokens,
+	} {
+		if count > 0 {
+			s.metrics.promptCacheTokens.WithLabelValues(append(labels, kind)...).Add(float64(count))
+		}
+	}
+	s.setPromptCacheEntries(cfg, source, resolution.Entries)
+	s.recordPromptCacheEvictions(cfg, source, "ttl", resolution.TTLEvictions)
+	s.recordPromptCacheEvictions(cfg, source, "capacity", resolution.CapacityEvictions)
+}
+
+func (s *SimContext) setPromptCacheEntries(cfg *common.Configuration, source string, entries int) {
+	s.metrics.promptCacheEntries.WithLabelValues(promptCacheLabels(cfg, source)...).Set(float64(entries))
+}
+
+func (s *SimContext) recordPromptCacheEvictions(cfg *common.Configuration, source, reason string, count int) {
+	if count > 0 {
+		labels := append(promptCacheLabels(cfg, source), reason)
+		s.metrics.promptCacheEvictions.WithLabelValues(labels...).Add(float64(count))
+	}
 }
 
 // setInitialPrometheusMetrics sends the default values to prometheus or

@@ -225,6 +225,10 @@ func (reqCtx *baseRequestContext) HandleRequest() (ResponseContext, *api.Error) 
 			PromptTokens:     numOfInputTokens,
 			CompletionTokens: 0,
 			TotalTokens:      numOfInputTokens,
+			PromptTokensDetails: &api.PromptTokensDetails{
+				CachedTokens:        prefixCacheStats.CachedTokens,
+				CacheCreationTokens: prefixCacheStats.CreatedTokens,
+			},
 		}
 		var logprobs *int
 		if !req.IsStream() {
@@ -258,7 +262,8 @@ func (reqCtx *baseRequestContext) HandleRequest() (ResponseContext, *api.Error) 
 		CompletionTokens: completionTokens,
 		TotalTokens:      numOfInputTokens + completionTokens,
 		PromptTokensDetails: &api.PromptTokensDetails{
-			CachedTokens: cachedPromptTokens,
+			CachedTokens:        cachedPromptTokens,
+			CacheCreationTokens: prefixCacheStats.CreatedTokens,
 		},
 	}
 

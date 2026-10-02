@@ -36,6 +36,8 @@ type PrefixCacheStats struct {
 	QueriedTokens int
 	// CachedTokens is the number of prompt tokens that were already cached
 	CachedTokens int
+	// CreatedTokens is the number of tokens recorded in the logical prompt cache.
+	CreatedTokens int
 }
 
 type KVCacheHelper struct {
